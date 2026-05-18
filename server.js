@@ -114,7 +114,81 @@ const EVOLUTION_API_URL = process.env.EVOLUTION_API_URL;
 const EVOLUTION_API_KEY = process.env.EVOLUTION_API_KEY;
 const EVOLUTION_INSTANCE = process.env.EVOLUTION_INSTANCE || 'salvamoney';
 
-async function sendMessage(phone, message, messageId) {
+  async function sendMessage(phone, message, messageId) {
+  try {
+    if (!message) {
+      console.log('⚠️ sendMessage chamado sem mensagem.');
+      return;
+    }
+
+    console.log(`📤 Tentando enviar para ${phone}: ${String(message).slice(0, 120)}`);
+
+    if (WHATSAPP_PROVIDER === 'evolution') {
+      const cleanPhone = String(phone || '').replace(/\D/g, '');
+      const url = `${EVOLUTION_API_URL}/message/sendText/${EVOLUTION_INSTANCE}`;
+
+      console.log('📤 Evolution URL:', url);
+      console.log('📤 Evolution instance:', EVOLUTION_INSTANCE);
+      console.log('📤 Evolution number:', cleanPhone);
+
+      const response = await axios.post(
+        url,
+        {
+          number: cleanPhone,
+          text: message,
+        },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            apikey: EVOLUTION_API_KEY,
+          },
+          timeout: 15000,
+          validateStatus: () => true,
+        }
+      );
+
+      console.log('📨 Evolution status:', response.status);
+      console.log('📨 Evolution response:', JSON.stringify(response.data).slice(0, 1000));
+
+      if (response.status >= 400) {
+        console.error('❌ Evolution recusou envio:', response.status, response.data);
+      }
+
+      return;
+    }
+
+    if (!ZAPI_URL) {
+      throw new Error('Z-API não configurada.');
+    }
+
+    const headers = { 'Content-Type': 'application/json' };
+
+    if (process.env.ZAPI_CLIENT_TOKEN) {
+      headers['Client-Token'] = process.env.ZAPI_CLIENT_TOKEN;
+    }
+
+    const payload = { phone, message };
+
+    if (messageId) {
+      payload.messageId = messageId;
+    }
+
+    const response = await axios.post(`${ZAPI_URL}/send-text`, payload, {
+      headers,
+      timeout: 15000,
+      validateStatus: () => true,
+    });
+
+    console.log('📨 Z-API status:', response.status);
+    console.log('📨 Z-API response:', JSON.stringify(response.data).slice(0, 1000));
+
+    if (response.status >= 400) {
+      console.error('❌ Z-API recusou envio:', response.status, response.data);
+    }
+  } catch (e) {
+    console.error('Erro ao enviar msg:', e.response?.status, e.response?.data || e.message);
+  }
+}
   try {
     if (WHATSAPP_PROVIDER === 'evolution') {
       await axios.post(
