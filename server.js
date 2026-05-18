@@ -80,19 +80,28 @@ async function saveSession(phone, data) {
   sessionCache.set(phone, { data, ts: Date.now() });
 }
 
-// ─── RATE LIMIT ───────────────────────────────────────────
-const lastMsg = new Map();
-const RATE_MS = 2000;
+// ─── EVITAR MENSAGENS DUPLICADAS ─────────────────────────
+// A Evolution pode reenviar o mesmo evento. Bloqueamos pelo ID da mensagem,
+// sem impedir comandos rápidos como "apagar último" logo após registrar.
+const processedMessages = new Map();
+const MESSAGE_TTL = 10 * 60 * 1000; // 10 minutos
 
-function isRateLimited(phone) {
-  const last = lastMsg.get(phone) || 0;
+function isDuplicateMessage(messageId) {
+  if (!messageId) return false;
 
-  if (Date.now() - last < RATE_MS) {
+  const now = Date.now();
+
+  for (const [id, ts] of processedMessages.entries()) {
+    if (now - ts > MESSAGE_TTL) {
+      processedMessages.delete(id);
+    }
+  }
+
+  if (processedMessages.has(messageId)) {
     return true;
   }
 
-  lastMsg.set(phone, Date.now());
-
+  processedMessages.set(messageId, now);
   return false;
 }
 
@@ -161,6 +170,19 @@ const GROQ_WHISPER = process.env.GROQ_AUDIO_MODEL || 'whisper-large-v3-turbo';
 
 function limparBase64(v = '') {
   return String(v).replace(/^data:.*?;base64,/, '').trim();
+}
+
+async function baixarMediaComoBase64(mediaUrl) {
+  if (!mediaUrl) return null;
+
+  const r = await axios.get(mediaUrl, {
+    responseType: 'arraybuffer',
+    timeout: 60000,
+    maxContentLength: Infinity,
+    maxBodyLength: Infinity,
+  });
+
+  return Buffer.from(r.data).toString('base64');
 }
 
 async function chamarIA(mensagens) {
@@ -1006,22 +1028,60 @@ function getMessageId(body) {
 }
 
 function getMediaInfo(body) {
+  const data = body?.data || body;
   const msg = getEvolutionMsg(body);
-  const audioMsg = msg?.audioMessage || null;
-  const imageMsg = msg?.imageMessage || null;
 
-  const base64 = body?.base64 ||
-    body?.data?.base64 ||
+  const audioMsg =
+    msg?.audioMessage ||
+    msg?.audio ||
+    data?.audioMessage ||
+    null;
+
+  const imageMsg =
+    msg?.imageMessage ||
+    msg?.image ||
+    data?.imageMessage ||
+    null;
+
+  const base64 =
+    body?.base64 ||
+    data?.base64 ||
     msg?.base64 ||
+    msg?.mediaBase64 ||
+    msg?.media ||
     audioMsg?.base64 ||
+    audioMsg?.mediaBase64 ||
+    audioMsg?.media ||
     imageMsg?.base64 ||
-    body?.data?.message?.base64;
+    imageMsg?.mediaBase64 ||
+    imageMsg?.media ||
+    data?.message?.base64 ||
+    data?.message?.mediaBase64 ||
+    data?.message?.media ||
+    null;
+
+  const mediaUrl =
+    body?.mediaUrl ||
+    data?.mediaUrl ||
+    msg?.mediaUrl ||
+    msg?.url ||
+    audioMsg?.url ||
+    audioMsg?.mediaUrl ||
+    imageMsg?.url ||
+    imageMsg?.mediaUrl ||
+    null;
 
   if (audioMsg) {
     return {
       type: 'audio',
       base64,
-      mimeType: audioMsg?.mimetype || 'audio/ogg',
+      mediaUrl,
+      mimeType:
+        audioMsg?.mimetype ||
+        audioMsg?.mimeType ||
+        msg?.mimetype ||
+        data?.mimetype ||
+        'audio/ogg',
     };
   }
 
@@ -1029,13 +1089,20 @@ function getMediaInfo(body) {
     return {
       type: 'image',
       base64,
-      mimeType: imageMsg?.mimetype || 'image/jpeg',
+      mediaUrl,
+      mimeType:
+        imageMsg?.mimetype ||
+        imageMsg?.mimeType ||
+        msg?.mimetype ||
+        data?.mimetype ||
+        'image/jpeg',
     };
   }
 
   return {
     type: null,
     base64: null,
+    mediaUrl: null,
     mimeType: null,
   };
 }
@@ -1287,12 +1354,20 @@ ${SITE_URL}`;
 
   // ── ÁUDIO ──
   if (mediaInfo?.type === 'audio') {
-    if (!mediaInfo.base64) {
-      return '⚠️ Áudio recebido sem arquivo. Ative *webhookBase64* na Evolution API.';
-    }
-
     try {
-      const transcricao = await transcreverAudio(mediaInfo.base64, mediaInfo.mimeType);
+      let audioBase64 = mediaInfo.base64;
+
+      if (!audioBase64 && mediaInfo.mediaUrl) {
+        console.log(`🎙️ Baixando áudio por URL: ${mediaInfo.mediaUrl}`);
+        audioBase64 = await baixarMediaComoBase64(mediaInfo.mediaUrl);
+      }
+
+      if (!audioBase64) {
+        console.log('⚠️ Áudio sem base64 e sem mediaUrl:', JSON.stringify(mediaInfo));
+        return '⚠️ Recebi seu áudio, mas ele veio sem arquivo. Mesmo com webhookBase64 ativo, a Evolution não mandou o base64 no payload.';
+      }
+
+      const transcricao = await transcreverAudio(audioBase64, mediaInfo.mimeType);
 
       if (!transcricao) {
         return 'Não entendi o áudio. Fale o valor e a descrição com clareza.';
@@ -1302,9 +1377,9 @@ ${SITE_URL}`;
 
       return await processarMensagem(phone, transcricao, null);
     } catch (err) {
-      console.error('Erro áudio:', err.message);
+      console.error('Erro áudio:', err.response?.data || err.message);
 
-      return 'Erro ao processar áudio. Tente mandar em texto.';
+      return 'Erro ao processar áudio. Tente mandar em texto por enquanto.';
     }
   }
 
@@ -1405,7 +1480,7 @@ app.post('/webhook', async (req, res) => {
       return;
     }
 
-    if (isRateLimited(phone)) {
+    if (isDuplicateMessage(messageId)) {
       return;
     }
 
@@ -1676,7 +1751,7 @@ if (phoneParam) carregar();
 app.get('/', (_, res) => res.json({
   status: 'ok',
   bot: 'SalvaMoney',
-  version: '5.1.0',
+  version: '5.2.0',
   provider: WHATSAPP_PROVIDER,
   site: SITE_URL,
   features: {
@@ -1714,7 +1789,7 @@ process.on('SIGINT', () => {
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-  console.log(`🚀 SalvaMoney v5.1 · porta ${PORT} · provider: ${WHATSAPP_PROVIDER}`);
+  console.log(`🚀 SalvaMoney v5.2 · porta ${PORT} · provider: ${WHATSAPP_PROVIDER}`);
   console.log(`🌐 Site: ${SITE_URL}`);
 
   if (GROQ_API_KEY) {
