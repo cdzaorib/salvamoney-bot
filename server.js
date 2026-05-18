@@ -114,7 +114,7 @@ const EVOLUTION_API_URL = process.env.EVOLUTION_API_URL;
 const EVOLUTION_API_KEY = process.env.EVOLUTION_API_KEY;
 const EVOLUTION_INSTANCE = process.env.EVOLUTION_INSTANCE || 'salvamoney';
 
-  async function sendMessage(phone, message, messageId) {
+async function sendMessage(phone, message, messageId) {
   try {
     if (!message) {
       console.log('⚠️ sendMessage chamado sem mensagem.');
@@ -185,50 +185,6 @@ const EVOLUTION_INSTANCE = process.env.EVOLUTION_INSTANCE || 'salvamoney';
     if (response.status >= 400) {
       console.error('❌ Z-API recusou envio:', response.status, response.data);
     }
-  } catch (e) {
-    console.error('Erro ao enviar msg:', e.response?.status, e.response?.data || e.message);
-  }
-}
-  try {
-    if (WHATSAPP_PROVIDER === 'evolution') {
-      await axios.post(
-        `${EVOLUTION_API_URL}/message/sendText/${EVOLUTION_INSTANCE}`,
-        {
-          number: String(phone).replace(/\D/g, ''),
-          text: message,
-        },
-        {
-          headers: {
-            'Content-Type': 'application/json',
-            apikey: EVOLUTION_API_KEY,
-          },
-          timeout: 15000,
-        }
-      );
-
-      return;
-    }
-
-    if (!ZAPI_URL) {
-      throw new Error('Z-API não configurada.');
-    }
-
-    const headers = { 'Content-Type': 'application/json' };
-
-    if (process.env.ZAPI_CLIENT_TOKEN) {
-      headers['Client-Token'] = process.env.ZAPI_CLIENT_TOKEN;
-    }
-
-    const payload = { phone, message };
-
-    if (messageId) {
-      payload.messageId = messageId;
-    }
-
-    await axios.post(`${ZAPI_URL}/send-text`, payload, {
-      headers,
-      timeout: 15000,
-    });
   } catch (e) {
     console.error('Erro ao enviar msg:', e.response?.status, e.response?.data || e.message);
   }
@@ -1523,9 +1479,15 @@ app.post('/webhook', async (req, res) => {
   try {
     const body = req.body || {};
 
+    console.log('🔔 Webhook recebido:', JSON.stringify({
+      event: body.event,
+      type: body.type,
+      hasData: Boolean(body.data),
+      hasMessage: Boolean(body.data?.message || body.message),
+    }).slice(0, 500));
+
     // A Evolution pode enviar o evento como:
     // messages.upsert, MESSAGES_UPSERT, messages_upsert ou messages-upsert.
-    // Antes o bot aceitava só messages.upsert e podia ignorar tudo.
     const eventName = String(body.event || '').toLowerCase();
 
     if (
@@ -1558,6 +1520,15 @@ app.post('/webhook', async (req, res) => {
     const messageId = getMessageId(body);
     const mediaInfo = getMediaInfo(body);
 
+    console.log('🔎 Dados extraídos:', JSON.stringify({
+      phone,
+      texto,
+      messageId,
+      mediaType: mediaInfo?.type,
+      hasBase64: Boolean(mediaInfo?.base64),
+      hasMediaUrl: Boolean(mediaInfo?.mediaUrl),
+    }).slice(0, 500));
+
     if (!phone) {
       console.log('⚠️ Webhook sem phone:', JSON.stringify(body).slice(0, 500));
       return;
@@ -1577,8 +1548,14 @@ app.post('/webhook', async (req, res) => {
 
     const resposta = await processarMensagem(phone, texto, mediaInfo);
 
+    console.log('🤖 Resposta gerada:', resposta ? String(resposta).slice(0, 500) : 'SEM RESPOSTA');
+
     if (resposta) {
+      console.log('📤 Chamando sendMessage...');
       await sendMessage(phone, resposta, messageId);
+      console.log('✅ sendMessage finalizado.');
+    } else {
+      console.log('⚠️ Não enviou porque resposta veio vazia.');
     }
   } catch (err) {
     console.error('Erro no webhook:', err.response?.data || err.message || err);
@@ -1840,7 +1817,7 @@ if (phoneParam) carregar();
 app.get('/', (_, res) => res.json({
   status: 'ok',
   bot: 'SalvaMoney',
-  version: '5.3.0',
+  version: '5.4.0',
   provider: WHATSAPP_PROVIDER,
   site: SITE_URL,
   features: {
@@ -1878,7 +1855,7 @@ process.on('SIGINT', () => {
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-  console.log(`🚀 SalvaMoney v5.3 · porta ${PORT} · provider: ${WHATSAPP_PROVIDER}`);
+  console.log(`🚀 SalvaMoney v5.4 · porta ${PORT} · provider: ${WHATSAPP_PROVIDER}`);
   console.log(`🌐 Site: ${SITE_URL}`);
 
   if (GROQ_API_KEY) {
