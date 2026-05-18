@@ -1024,19 +1024,58 @@ function getTextFromWebhook(body) {
   );
 }
 
-function getPhoneFromWebhook(body) {
-  const z = body?.phone || body?.sender;
-
-  if (z) {
-    return String(z).replace(/\D/g, '');
-  }
-
-  const data = body?.data || body;
-
-  return String(data?.key?.remoteJid || data?.remoteJid || '')
+function cleanPhoneNumber(value) {
+  return String(value || '')
     .replace('@s.whatsapp.net', '')
     .replace('@c.us', '')
+    .replace('@lid', '')
     .replace(/\D/g, '');
+}
+
+function getPhoneCandidatesFromWebhook(body) {
+  const data = body?.data || body;
+  const key = data?.key || body?.key || {};
+
+  return {
+    keyRemoteJid: cleanPhoneNumber(key?.remoteJid),
+    keyParticipant: cleanPhoneNumber(key?.participant),
+    dataRemoteJid: cleanPhoneNumber(data?.remoteJid),
+    dataSender: cleanPhoneNumber(data?.sender),
+    bodyRemoteJid: cleanPhoneNumber(body?.remoteJid),
+    bodySender: cleanPhoneNumber(body?.sender),
+    bodyPhone: cleanPhoneNumber(body?.phone),
+    bodyFrom: cleanPhoneNumber(body?.from),
+    bodyNumber: cleanPhoneNumber(body?.number),
+  };
+}
+
+function getPhoneFromWebhook(body) {
+  const data = body?.data || body;
+  const key = data?.key || body?.key || {};
+  const candidates = getPhoneCandidatesFromWebhook(body);
+
+  // Evolution API:
+  // Em mensagem direta recebida, key.remoteJid costuma ser o número de quem enviou.
+  // Alguns payloads também trazem body.sender/body.phone como o número da instância,
+  // então NÃO devemos priorizar esses campos no Evolution.
+  if (WHATSAPP_PROVIDER === 'evolution') {
+    if (String(key?.remoteJid || '').includes('@g.us')) {
+      return candidates.keyParticipant || candidates.dataSender || candidates.bodySender || '';
+    }
+
+    return (
+      candidates.keyRemoteJid ||
+      candidates.dataRemoteJid ||
+      candidates.dataSender ||
+      candidates.bodyRemoteJid ||
+      candidates.bodySender ||
+      candidates.bodyPhone ||
+      ''
+    );
+  }
+
+  // Z-API antigo
+  return candidates.bodyPhone || candidates.bodySender || candidates.bodyFrom || candidates.bodyNumber || '';
 }
 
 function isFromMeWebhook(body) {
@@ -1527,7 +1566,11 @@ app.post('/webhook', async (req, res) => {
       mediaType: mediaInfo?.type,
       hasBase64: Boolean(mediaInfo?.base64),
       hasMediaUrl: Boolean(mediaInfo?.mediaUrl),
-    }).slice(0, 500));
+      phoneCandidates: getPhoneCandidatesFromWebhook(body),
+      fromMe: Boolean((body?.data || body)?.key?.fromMe || body?.fromMe),
+      remoteJid: (body?.data || body)?.key?.remoteJid || (body?.data || body)?.remoteJid || body?.remoteJid,
+      participant: (body?.data || body)?.key?.participant,
+    }).slice(0, 1500));
 
     if (!phone) {
       console.log('⚠️ Webhook sem phone:', JSON.stringify(body).slice(0, 500));
@@ -1817,7 +1860,7 @@ if (phoneParam) carregar();
 app.get('/', (_, res) => res.json({
   status: 'ok',
   bot: 'SalvaMoney',
-  version: '5.4.0',
+  version: '5.5.0',
   provider: WHATSAPP_PROVIDER,
   site: SITE_URL,
   features: {
@@ -1855,7 +1898,7 @@ process.on('SIGINT', () => {
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-  console.log(`🚀 SalvaMoney v5.4 · porta ${PORT} · provider: ${WHATSAPP_PROVIDER}`);
+  console.log(`🚀 SalvaMoney v5.5 · porta ${PORT} · provider: ${WHATSAPP_PROVIDER}`);
   console.log(`🌐 Site: ${SITE_URL}`);
 
   if (GROQ_API_KEY) {
