@@ -1449,19 +1449,33 @@ app.post('/webhook', async (req, res) => {
   try {
     const body = req.body || {};
 
-    if (body.event && body.event !== 'messages.upsert') {
+    // A Evolution pode enviar o evento como:
+    // messages.upsert, MESSAGES_UPSERT, messages_upsert ou messages-upsert.
+    // Antes o bot aceitava só messages.upsert e podia ignorar tudo.
+    const eventName = String(body.event || '').toLowerCase();
+
+    if (
+      eventName &&
+      !['messages.upsert', 'messages_upsert', 'messages-upsert'].includes(eventName)
+    ) {
+      console.log('ℹ️ Evento ignorado:', body.event);
       return;
     }
 
     if (isFromMeWebhook(body)) {
+      console.log('ℹ️ Mensagem ignorada: fromMe');
       return;
     }
 
     if (isGroupWebhook(body)) {
+      console.log('ℹ️ Mensagem ignorada: grupo');
       return;
     }
 
-    if (body.type && body.type !== 'ReceivedCallback') {
+    // Esse filtro é somente para Z-API.
+    // Se deixar ativo para Evolution, alguns payloads podem ser ignorados.
+    if (WHATSAPP_PROVIDER !== 'evolution' && body.type && body.type !== 'ReceivedCallback') {
+      console.log('ℹ️ Tipo Z-API ignorado:', body.type);
       return;
     }
 
@@ -1471,16 +1485,17 @@ app.post('/webhook', async (req, res) => {
     const mediaInfo = getMediaInfo(body);
 
     if (!phone) {
-      console.log('⚠️ Webhook sem phone:', JSON.stringify(body).slice(0, 300));
-
+      console.log('⚠️ Webhook sem phone:', JSON.stringify(body).slice(0, 500));
       return;
     }
 
     if (!texto && !mediaInfo?.type) {
+      console.log('⚠️ Webhook sem texto/mídia:', JSON.stringify(body).slice(0, 500));
       return;
     }
 
     if (isDuplicateMessage(messageId)) {
+      console.log('ℹ️ Mensagem duplicada ignorada:', messageId);
       return;
     }
 
@@ -1492,7 +1507,7 @@ app.post('/webhook', async (req, res) => {
       await sendMessage(phone, resposta, messageId);
     }
   } catch (err) {
-    console.error('Erro no webhook:', err);
+    console.error('Erro no webhook:', err.response?.data || err.message || err);
   }
 });
 
@@ -1751,7 +1766,7 @@ if (phoneParam) carregar();
 app.get('/', (_, res) => res.json({
   status: 'ok',
   bot: 'SalvaMoney',
-  version: '5.2.0',
+  version: '5.3.0',
   provider: WHATSAPP_PROVIDER,
   site: SITE_URL,
   features: {
@@ -1789,7 +1804,7 @@ process.on('SIGINT', () => {
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-  console.log(`🚀 SalvaMoney v5.2 · porta ${PORT} · provider: ${WHATSAPP_PROVIDER}`);
+  console.log(`🚀 SalvaMoney v5.3 · porta ${PORT} · provider: ${WHATSAPP_PROVIDER}`);
   console.log(`🌐 Site: ${SITE_URL}`);
 
   if (GROQ_API_KEY) {
