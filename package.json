@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
-    "check": "node --check server.js && node --check src/expense-parser.js",
+    "check": "find server.js src test -type f -name '*.js' -exec node --check {} \\;",
     "test": "node --test"
   },
   "dependencies": {

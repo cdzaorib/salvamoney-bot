@@ -12,6 +12,7 @@ test('parseMoney supports common Brazilian money formats', () => {
   assert.equal(parseMoney('R$ 1.234,56'), 1234.56);
   assert.equal(parseMoney('45,90'), 45.9);
   assert.equal(parseMoney('35'), 35);
+  assert.equal(parseMoney('valor desconhecido'), null);
 });
 
 test('parsearGasto handles value before and after description', () => {
@@ -41,4 +42,5 @@ test('parsearParcelamento handles amount before and after description', () => {
     desc: 'notebook',
     parcelas: 10,
   });
+  assert.equal(parsearParcelamento('paguei notebook a vista'), null);
 });
