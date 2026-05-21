@@ -3,8 +3,10 @@
 const express = require('express');
 const axios = require('axios');
 const FormData = require('form-data');
+const { timingSafeEqual } = require('node:crypto');
 const { initializeApp } = require('firebase/app');
 const { getDatabase, ref, get, push, set, remove } = require('firebase/database');
+const { parseMoney, parsearGasto, parsearParcelamento } = require('./src/expense-parser');
 require('dotenv').config();
 
 // ─── APP ─────────────────────────────────────────────────
@@ -14,6 +16,91 @@ app.use(express.json({ limit: process.env.JSON_LIMIT || '25mb' }));
 // ─── CONFIG GERAL ─────────────────────────────────────────
 const WHATSAPP_PROVIDER = process.env.WHATSAPP_PROVIDER || 'zapi';
 const SITE_URL = process.env.SITE_URL || 'https://cdzaorib.github.io/Salvamoney2.0/';
+const WEBHOOK_TOKEN = String(process.env.WEBHOOK_TOKEN || '');
+const DASHBOARD_TOKEN = String(process.env.DASHBOARD_TOKEN || '');
+const LOG_SENSITIVE_DATA = process.env.LOG_SENSITIVE_DATA === 'true';
+
+function tokenMatches(expected, provided) {
+  if (!expected || !provided) {
+    return false;
+  }
+
+  const expectedBuffer = Buffer.from(String(expected));
+  const providedBuffer = Buffer.from(String(provided));
+
+  return expectedBuffer.length === providedBuffer.length &&
+    timingSafeEqual(expectedBuffer, providedBuffer);
+}
+
+function bearerToken(req) {
+  const auth = String(req.get('authorization') || '');
+
+  return auth.match(/^Bearer\s+(.+)$/i)?.[1] || '';
+}
+
+function webhookRequestToken(req) {
+  return String(
+    req.get('x-webhook-token') ||
+    bearerToken(req) ||
+    req.query?.webhook_token ||
+    req.query?.token ||
+    ''
+  );
+}
+
+function dashboardRequestToken(req) {
+  return String(
+    req.get('x-dashboard-token') ||
+    bearerToken(req) ||
+    req.query?.dashboard_token ||
+    req.query?.token ||
+    ''
+  );
+}
+
+function dashboardAuthorized(req) {
+  return !DASHBOARD_TOKEN || tokenMatches(DASHBOARD_TOKEN, dashboardRequestToken(req));
+}
+
+function maskPhone(value) {
+  const phone = String(value || '');
+
+  if (LOG_SENSITIVE_DATA || !phone) {
+    return phone;
+  }
+
+  const visible = phone.slice(-4);
+
+  return `${'*'.repeat(Math.max(phone.length - visible.length, 0))}${visible}`;
+}
+
+function logText(value, limit = 120) {
+  const text = String(value || '');
+
+  if (!text) {
+    return '';
+  }
+
+  if (!LOG_SENSITIVE_DATA) {
+    return `[${text.length} chars]`;
+  }
+
+  return text.slice(0, limit);
+}
+
+function logMediaUrl(value) {
+  if (!value) {
+    return '';
+  }
+
+  return LOG_SENSITIVE_DATA ? String(value) : '[media-url]';
+}
+
+function logPhoneCandidates(candidates) {
+  return Object.fromEntries(
+    Object.entries(candidates || {}).map(([key, value]) => [key, maskPhone(value)])
+  );
+}
 
 // ─── VALIDAÇÃO DE ENV ─────────────────────────────────────
 const REQUIRED_ENV = [
@@ -43,6 +130,14 @@ if (WHATSAPP_PROVIDER !== 'evolution' && !process.env.ZAPI_CLIENT_TOKEN) {
 
 if (!process.env.GROQ_API_KEY) {
   console.warn('⚠️ GROQ_API_KEY ausente. Sem IA, sem áudio e sem imagem.');
+}
+
+if (!WEBHOOK_TOKEN) {
+  console.warn('⚠️ WEBHOOK_TOKEN ausente. O webhook aceita chamadas sem token.');
+}
+
+if (!DASHBOARD_TOKEN) {
+  console.warn('⚠️ DASHBOARD_TOKEN ausente. O dashboard usa somente o telefone para consultar dados.');
 }
 
 // ─── FIREBASE ─────────────────────────────────────────────
@@ -121,7 +216,7 @@ async function sendMessage(phone, message, messageId) {
       return;
     }
 
-    console.log(`📤 Tentando enviar para ${phone}: ${String(message).slice(0, 120)}`);
+    console.log(`📤 Tentando enviar para ${maskPhone(phone)}: ${logText(message)}`);
 
     if (WHATSAPP_PROVIDER === 'evolution') {
       const cleanPhone = String(phone || '').replace(/\D/g, '');
@@ -129,7 +224,7 @@ async function sendMessage(phone, message, messageId) {
 
       console.log('📤 Evolution URL:', url);
       console.log('📤 Evolution instance:', EVOLUTION_INSTANCE);
-      console.log('📤 Evolution number:', cleanPhone);
+      console.log('📤 Evolution number:', maskPhone(cleanPhone));
 
       const response = await axios.post(
         url,
@@ -623,6 +718,10 @@ function isCreateCodeCommand(msg = '') {
   return /^(criar|gerar|novo)\s+(codigo|código)\b/i.test(msg);
 }
 
+function isSwitchAccountCommand(msg = '') {
+  return /^(trocar|mudar)(\s+de)?\s+conta\b/i.test(msg);
+}
+
 function extrairNomeDoCriarCodigo(msg = '') {
   return msg
     .replace(/^(criar|gerar|novo)\s+(codigo|código)\s*/i, '')
@@ -765,86 +864,55 @@ ${SITE_URL}`;
   ].join('\n');
 }
 
-// ─── PARSER DE VALORES MONETÁRIOS ────────────────────────
-function parseMoney(raw) {
-  const c = String(raw || '')
-    .replace(/r\$/gi, '')
-    .replace(/\s/g, '')
-    .trim();
+async function montarListaGastos(sessao) {
+  const items = await getGastosMesComIds(sessao.group, sessao.user);
+  const mes = MESES[Number(dateParts().month) - 1];
 
-  let n = c;
-
-  if (/^\d{1,3}(\.\d{3})+,\d{1,2}$/.test(c)) {
-    n = c.replace(/\./g, '').replace(',', '.');
-  } else if (c.includes(',') && !c.includes('.')) {
-    n = c.replace(',', '.');
+  if (!items.length) {
+    return `📭 Nenhum gasto registrado em ${mes} ainda.`;
   }
 
-  const v = parseFloat(n);
+  const linhas = items
+    .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))
+    .slice(0, 10)
+    .map((e, i) => `${i + 1}. ${e.date || todayIso()} · ${e.desc || 'Gasto'} · ${fmt(e.value)} · ${e.cat || 'Outros'}`);
 
-  return isFinite(v) ? v : null;
+  return [
+    `🧾 *Últimos gastos de ${mes}*`,
+    `👤 ${sessao.user} | Grupo: ${sessao.group}`,
+    '',
+    ...linhas,
+    '',
+    'Para apagar um deles: _apagar último_, _apagar [valor]_ ou _apagar [descricao]_.',
+  ].join('\n');
 }
 
-function parsearGasto(texto) {
-  const t = String(texto || '')
-    .trim()
-    .replace(/^gastei\s*/i, '')
-    .replace(/\breais?\b/gi, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+async function montarResumoHoje(sessao) {
+  const hoje = todayIso();
+  const items = (await getGastosMesComIds(sessao.group, sessao.user))
+    .filter((item) => item.date === hoje);
 
-  const mp = '(?:R\\$\\s*)?\\d{1,3}(?:\\.\\d{3})*(?:[,.]\\d{1,2})?|(?:R\\$\\s*)?\\d+(?:[,.]\\d{1,2})?';
-
-  let m = t.match(new RegExp(`^(${mp})\\s+(.+)$`, 'i'));
-
-  if (m) {
-    const v = parseMoney(m[1]);
-    const d = m[2].replace(/^(no|na|em)\s+/i, '').trim();
-
-    if (v && v > 0 && d) {
-      return { valor: v, desc: d };
-    }
+  if (!items.length) {
+    return '📭 Nenhum gasto registrado hoje ainda.';
   }
 
-  m = t.match(new RegExp(`^(.+?)\\s+(${mp})$`, 'i'));
+  const total = items.reduce((acc, item) => acc + Number(item.value || 0), 0);
+  const linhas = items
+    .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))
+    .slice(0, 5)
+    .map((item) => `  • ${item.desc || 'Gasto'}: ${fmt(item.value)} (${item.cat || 'Outros'})`);
 
-  if (m) {
-    const v = parseMoney(m[2]);
-    const d = m[1].replace(/^(no|na|em)\s+/i, '').trim();
-
-    if (v && v > 0 && d) {
-      return { valor: v, desc: d };
-    }
-  }
-
-  return null;
+  return [
+    '📅 *Gastos de hoje*',
+    `💸 *Total: ${fmt(total)}*`,
+    '',
+    ...linhas,
+    '',
+    'Para ver o mês inteiro: _resumo_.',
+  ].join('\n');
 }
 
 // ─── PARCELAMENTO ─────────────────────────────────────────
-function parsearParcelamento(texto) {
-  let m = texto.match(/(?:parcelei|comprei parcelado?)\s+([\d.,]+)\s+(.+?)\s+em\s+(\d+)\s*[xX]/i);
-
-  if (m) {
-    return {
-      valor: parseMoney(m[1]),
-      desc: m[2].trim(),
-      parcelas: parseInt(m[3], 10),
-    };
-  }
-
-  m = texto.match(/(?:parcelei|comprei parcelado?)\s+(.+?)\s+([\d.,]+)\s+em\s+(\d+)\s*[xX]/i);
-
-  if (m) {
-    return {
-      valor: parseMoney(m[2]),
-      desc: m[1].trim(),
-      parcelas: parseInt(m[3], 10),
-    };
-  }
-
-  return null;
-}
-
 async function registrarParcelamento(sessao, { valor, desc, parcelas }) {
   if (!valor || valor <= 0) {
     return 'Qual foi o valor total? 💸';
@@ -990,6 +1058,16 @@ function isHelpCommand(s) {
 
 function isSummaryCommand(s) {
   return ['resumo', 'extrato', 'total'].includes(s) || /quanto\s+(eu\s+)?gastei|gastos?\s+do\s+m[eê]s/i.test(s);
+}
+
+function isTodayCommand(s) {
+  return ['hoje', 'resumo hoje', 'gastos hoje', 'gastei hoje'].includes(s) ||
+    /quanto\s+(eu\s+)?gastei\s+hoje/i.test(s);
+}
+
+function isListCommand(s) {
+  return ['lista', 'listar', 'ultimos gastos', 'últimos gastos'].includes(s) ||
+    /^(listar|mostrar|ver)\s+(meus\s+)?gastos\b/i.test(s);
 }
 
 function isDeleteCommand(s) {
@@ -1300,6 +1378,9 @@ async function processarMensagem(phone, texto, mediaInfo = null) {
       'Exemplo:',
       '_entrar Carlos CASA2024_',
       '',
+      '🔁 *Trocar de conta:*',
+      '_trocar conta SEU NOME CODIGODOGRUPO_',
+      '',
       '🆕 *Não tem código?*',
       'Digite:',
       '_criar código SEU NOME_',
@@ -1334,6 +1415,12 @@ async function processarMensagem(phone, texto, mediaInfo = null) {
       '📊 *Resumo:*',
       '_resumo_ ou _quanto gastei?_',
       '',
+      '📅 *Hoje:*',
+      '_quanto gastei hoje?_',
+      '',
+      '🧾 *Últimos gastos:*',
+      '_listar gastos_',
+      '',
       '🌐 *Ver no site:*',
       SITE_URL,
       '',
@@ -1350,15 +1437,35 @@ async function processarMensagem(phone, texto, mediaInfo = null) {
     return await criarCodigoGrupo(phone, nome);
   }
 
-  // ── ENTRAR ──
-  const matchEntrar = msg.match(/^entrar\s+(.+)\s+([A-Za-z0-9_-]+)$/i);
+  // ── ENTRAR / TROCAR CONTA ──
+  const matchConta = msg.match(
+    /^(entrar|(?:trocar|mudar)(?:\s+de)?\s+conta)\s+(.+)\s+([A-Za-z0-9_-]+)$/i
+  );
 
-  if (matchEntrar) {
-    const user = sanitizeKey(matchEntrar[1]);
-    const group = sanitizeKey(matchEntrar[2].toUpperCase());
+  if (isSwitchAccountCommand(msg) && !matchConta) {
+    const contaAtual = sessao
+      ? `Conta atual: *${sessao.user}* | Grupo: *${sessao.group}*\n\n`
+      : '';
+
+    return `${contaAtual}Para trocar de conta, digite:
+_trocar conta SEU NOME CODIGODOGRUPO_
+
+Exemplo:
+_trocar conta Ana CASA2024_
+
+Você também pode usar:
+_entrar SEU NOME CODIGODOGRUPO_`;
+  }
+
+  if (matchConta) {
+    const isTroca = isSwitchAccountCommand(matchConta[1]);
+    const user = sanitizeKey(matchConta[2]);
+    const group = sanitizeKey(matchConta[3].toUpperCase());
 
     if (!user || !group) {
-      return '❌ Use: _entrar SEU NOME CODIGODOGRUPO_';
+      return isTroca
+        ? '❌ Use: _trocar conta SEU NOME CODIGODOGRUPO_'
+        : '❌ Use: _entrar SEU NOME CODIGODOGRUPO_';
     }
 
     const snap = await get(ref(db, `grupos/${group}`));
@@ -1381,7 +1488,11 @@ _criar código Carlos_`;
       updatedAt: todayIso(),
     });
 
-    return `✅ Pronto! Você entrou como *${user}* no grupo *${group}*.
+    const mensagemConta = isTroca
+      ? `✅ Conta trocada! Agora você está como *${user}* no grupo *${group}*.`
+      : `✅ Pronto! Você entrou como *${user}* no grupo *${group}*.`;
+
+    return `${mensagemConta}
 
 Agora você pode registrar gastos pelo WhatsApp.
 
@@ -1427,12 +1538,12 @@ ${SITE_URL}`;
       let audioBase64 = mediaInfo.base64;
 
       if (!audioBase64 && mediaInfo.mediaUrl) {
-        console.log(`🎙️ Baixando áudio por URL: ${mediaInfo.mediaUrl}`);
+        console.log(`🎙️ Baixando áudio por URL: ${logMediaUrl(mediaInfo.mediaUrl)}`);
         audioBase64 = await baixarMediaComoBase64(mediaInfo.mediaUrl);
       }
 
       if (!audioBase64) {
-        console.log('⚠️ Áudio sem base64 e sem mediaUrl:', JSON.stringify(mediaInfo));
+        console.log('⚠️ Áudio sem base64 e sem mediaUrl.');
         return '⚠️ Recebi seu áudio, mas ele veio sem arquivo. Mesmo com webhookBase64 ativo, a Evolution não mandou o base64 no payload.';
       }
 
@@ -1442,7 +1553,7 @@ ${SITE_URL}`;
         return 'Não entendi o áudio. Fale o valor e a descrição com clareza.';
       }
 
-      console.log(`🎙️ [${phone}] Transcrito: ${transcricao}`);
+      console.log(`🎙️ [${maskPhone(phone)}] Transcrito: ${logText(transcricao)}`);
 
       return await processarMensagem(phone, transcricao, null);
     } catch (err) {
@@ -1463,9 +1574,19 @@ ${SITE_URL}`;
     }
   }
 
+  // ── HOJE ──
+  if (isTodayCommand(msgMin)) {
+    return await montarResumoHoje(sessao);
+  }
+
   // ── RESUMO ──
   if (isSummaryCommand(msgMin)) {
     return await montarResumoFormatado(sessao);
+  }
+
+  // ── LISTAR ──
+  if (isListCommand(msgMin)) {
+    return await montarListaGastos(sessao);
   }
 
   // ── APAGAR ──
@@ -1513,6 +1634,11 @@ Ou *ajuda* para ver os comandos.`;
 
 // ─── WEBHOOK ──────────────────────────────────────────────
 app.post('/webhook', async (req, res) => {
+  if (WEBHOOK_TOKEN && !tokenMatches(WEBHOOK_TOKEN, webhookRequestToken(req))) {
+    console.warn('⚠️ Webhook recusado: token ausente ou inválido.');
+    return res.status(401).json({ ok: false, error: 'Webhook não autorizado.' });
+  }
+
   res.sendStatus(200);
 
   try {
@@ -1560,25 +1686,27 @@ app.post('/webhook', async (req, res) => {
     const mediaInfo = getMediaInfo(body);
 
     console.log('🔎 Dados extraídos:', JSON.stringify({
-      phone,
-      texto,
+      phone: maskPhone(phone),
+      texto: logText(texto),
       messageId,
       mediaType: mediaInfo?.type,
       hasBase64: Boolean(mediaInfo?.base64),
       hasMediaUrl: Boolean(mediaInfo?.mediaUrl),
-      phoneCandidates: getPhoneCandidatesFromWebhook(body),
+      phoneCandidates: logPhoneCandidates(getPhoneCandidatesFromWebhook(body)),
       fromMe: Boolean((body?.data || body)?.key?.fromMe || body?.fromMe),
-      remoteJid: (body?.data || body)?.key?.remoteJid || (body?.data || body)?.remoteJid || body?.remoteJid,
-      participant: (body?.data || body)?.key?.participant,
+      remoteJid: maskPhone(
+        (body?.data || body)?.key?.remoteJid || (body?.data || body)?.remoteJid || body?.remoteJid
+      ),
+      participant: maskPhone((body?.data || body)?.key?.participant),
     }).slice(0, 1500));
 
     if (!phone) {
-      console.log('⚠️ Webhook sem phone:', JSON.stringify(body).slice(0, 500));
+      console.log('⚠️ Webhook sem phone.');
       return;
     }
 
     if (!texto && !mediaInfo?.type) {
-      console.log('⚠️ Webhook sem texto/mídia:', JSON.stringify(body).slice(0, 500));
+      console.log('⚠️ Webhook sem texto/mídia.');
       return;
     }
 
@@ -1587,11 +1715,11 @@ app.post('/webhook', async (req, res) => {
       return;
     }
 
-    console.log(`📩 [${phone}] ${texto || `[${mediaInfo.type}]`}`);
+    console.log(`📩 [${maskPhone(phone)}] ${texto ? logText(texto) : `[${mediaInfo.type}]`}`);
 
     const resposta = await processarMensagem(phone, texto, mediaInfo);
 
-    console.log('🤖 Resposta gerada:', resposta ? String(resposta).slice(0, 500) : 'SEM RESPOSTA');
+    console.log('🤖 Resposta gerada:', resposta ? logText(resposta, 500) : 'SEM RESPOSTA');
 
     if (resposta) {
       console.log('📤 Chamando sendMessage...');
@@ -1608,6 +1736,15 @@ app.post('/webhook', async (req, res) => {
 // ─── DASHBOARD API ────────────────────────────────────────
 app.get('/api/dashboard', async (req, res) => {
   try {
+    res.setHeader('Cache-Control', 'no-store');
+
+    if (!dashboardAuthorized(req)) {
+      return res.status(401).json({
+        ok: false,
+        error: 'Dashboard não autorizado.',
+      });
+    }
+
     const phone = String(req.query.phone || req.query.numero || '').replace(/\D/g, '');
 
     if (!phone) {
@@ -1672,6 +1809,15 @@ app.get('/api/dashboard', async (req, res) => {
 // ─── APAGAR VIA API ───────────────────────────────────────
 app.delete('/api/gasto/:id', async (req, res) => {
   try {
+    res.setHeader('Cache-Control', 'no-store');
+
+    if (!dashboardAuthorized(req)) {
+      return res.status(401).json({
+        ok: false,
+        error: 'Dashboard não autorizado.',
+      });
+    }
+
     const phone = String(req.query.phone || '').replace(/\D/g, '');
 
     if (!phone) {
@@ -1707,6 +1853,7 @@ app.delete('/api/gasto/:id', async (req, res) => {
 
 // ─── DASHBOARD UI ─────────────────────────────────────────
 app.get('/dashboard', (_, res) => {
+  res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
 
   res.send(`<!DOCTYPE html>
@@ -1781,10 +1928,29 @@ td{padding:10px 8px;border-bottom:1px solid rgba(255,255,255,.05)}
 <script>
 const params = new URLSearchParams(location.search);
 const phoneParam = params.get('phone') || '';
+const tokenParam = params.get('token') || params.get('dashboard_token') || '';
 document.getElementById('phone').value = phoneParam;
 
 function moeda(v) {
   return Number(v||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
+}
+
+function esc(v) {
+  return String(v||'').replace(/[&<>"']/g, c => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  }[c]));
+}
+
+function apiQuery(phone) {
+  const query = new URLSearchParams({ phone });
+
+  if (tokenParam) query.set('token', tokenParam);
+
+  return query.toString();
 }
 
 async function carregar() {
@@ -1797,7 +1963,7 @@ async function carregar() {
     return;
   }
 
-  const r = await fetch('/api/dashboard?phone=' + encodeURIComponent(phone));
+  const r = await fetch('/api/dashboard?' + apiQuery(phone));
   const dados = await r.json();
 
   if (!dados.ok) {
@@ -1817,7 +1983,7 @@ async function carregar() {
   const maior = cats.length ? cats[0][1] : 1;
 
   document.getElementById('categorias').innerHTML = cats.map(([c,v]) =>
-    '<div class="cat-item"><div class="cat-name">'+c+'</div><div class="cat-val">'+moeda(v)+'</div>' +
+    '<div class="cat-item"><div class="cat-name">'+esc(c)+'</div><div class="cat-val">'+moeda(v)+'</div>' +
     '<div class="bar"><div class="bar-inner" style="width:'+Math.round(v/maior*100)+'%"></div></div></div>'
   ).join('') || '<p style="color:#8ba0cc">Nenhum gasto.</p>';
 
@@ -1833,17 +1999,18 @@ function renderTabela(ultimos, phone) {
   document.getElementById('ultimos').innerHTML =
     '<table><thead><tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Origem</th><th>Valor</th><th></th></tr></thead><tbody>' +
     ultimos.map(i =>
-      '<tr><td>'+i.date+'</td><td>'+i.desc+'</td><td>'+i.cat+'</td>' +
-      '<td><span class="origem">'+i.origem+'</span></td>' +
+      '<tr><td>'+esc(i.date)+'</td><td>'+esc(i.desc)+'</td><td>'+esc(i.cat)+'</td>' +
+      '<td><span class="origem">'+esc(i.origem)+'</span></td>' +
       '<td>'+moeda(i.value)+'</td>' +
-      '<td><button class="btn-sm" onclick="apagar(\\''+i.id+'\\',\\''+encodeURIComponent(phone)+'\\')">Apagar</button></td></tr>'
+      '<td><button class="btn-sm" onclick="apagar(\\''+esc(i.id)+'\\',\\''+encodeURIComponent(phone)+'\\')">Apagar</button></td></tr>'
     ).join('') + '</tbody></table>';
 }
 
 async function apagar(id, phoneEnc) {
   if (!confirm('Apagar este gasto?')) return;
 
-  const r = await fetch('/api/gasto/'+id+'?phone='+phoneEnc, { method: 'DELETE' });
+  const query = apiQuery(decodeURIComponent(phoneEnc));
+  const r = await fetch('/api/gasto/'+encodeURIComponent(id)+'?'+query, { method: 'DELETE' });
   const d = await r.json();
 
   if (d.ok) carregar();
