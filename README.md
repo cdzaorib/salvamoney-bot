@@ -71,7 +71,9 @@ Por padrão, logs escondem telefone, mensagens e transcrições. Use `LOG_SENSIT
 | `src/config.js` | Variáveis de ambiente atuais, defaults e validação |
 | `src/firebase-db.js` | Inicialização do Firebase Realtime Database |
 | `src/routes.js` | Webhook, dashboard, home e health nas rotas existentes |
-| `src/bot-service.js` | Fluxo dos comandos, gastos, resumo, áudio, imagem e IA |
+| `src/bot-service.js` | Orquestra os comandos recebidos pelo bot |
+| `src/bot/account-service.js` | Criação de código, entrada e troca de conta |
+| `src/bot/ai-media-service.js` | IA de texto, transcrição de áudio e leitura de imagem |
 | `src/bot/commands.js` | Detectores de comandos e extração do nome ao criar código |
 | `src/bot/categories.js` | Regras de categoria usadas em texto, imagem e IA |
 | `src/bot/date-utils.js` | Datas do bot, chave mensal do Firebase e nomes dos meses |

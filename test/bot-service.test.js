@@ -75,7 +75,12 @@ function expenseSeed(expenses = {}) {
   };
 }
 
-function createService({ seed = {}, session = null } = {}) {
+function createService({
+  configOverrides = {},
+  groqOverrides = {},
+  seed = {},
+  session = null,
+} = {}) {
   const firebase = createFakeFirebase(seed);
   const savedSessions = [];
   const sessionStore = {
@@ -85,10 +90,16 @@ function createService({ seed = {}, session = null } = {}) {
     },
   };
   const service = createBotService({
-    config,
+    config: {
+      ...config,
+      ...configOverrides,
+    },
     db: {},
     firebaseOps: firebase.ops,
-    groq,
+    groq: {
+      ...groq,
+      ...groqOverrides,
+    },
     safeLog,
     sessionStore,
   });
@@ -123,6 +134,24 @@ test('entrar links an account without a previous session', async () => {
   const resposta = await service.processarMensagem('5511999999999', 'entrar Ana CASA2024');
 
   assert.match(resposta, /Pronto!/);
+  assert.deepEqual(savedSessions, [{
+    phone: '5511999999999',
+    data: {
+      user: 'Ana',
+      group: 'CASA2024',
+      updatedAt: todayIso(),
+    },
+  }]);
+});
+
+test('trocar conta links the phone to the requested account', async () => {
+  const { savedSessions, service } = createService({
+    seed: expenseSeed(),
+    session: { group: 'CASA2024', user: 'Carlos' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'trocar conta Ana CASA2024');
+
+  assert.match(resposta, /Conta trocada/);
   assert.deepEqual(savedSessions, [{
     phone: '5511999999999',
     data: {
@@ -246,4 +275,75 @@ test('parcelamento writes one installment per month to the fake Firebase tree', 
     total: 12,
     valorTotal: 1200,
   });
+});
+
+test('audio transcription reuses the current text expense flow', async () => {
+  const { firebase, service } = createService({
+    groqOverrides: {
+      transcreverAudio: async () => '35 uber',
+    },
+    seed: expenseSeed(),
+    session: { group: 'CASA2024', user: 'Ana' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', '', {
+    base64: 'audio-base64',
+    mimeType: 'audio/ogg',
+    type: 'audio',
+  });
+
+  assert.match(resposta, /uber/);
+  assert.match(resposta, /registrado/);
+  assert.equal(firebase.pushes.length, 1);
+  assert.equal(firebase.pushes[0].value.origem, 'texto');
+});
+
+test('image analysis registers the extracted expense through the current image flow', async () => {
+  const { firebase, service } = createService({
+    groqOverrides: {
+      analisarImagem: async () => JSON.stringify({
+        encontrou_gasto: true,
+        desc: 'mercado',
+        valor: 45.9,
+        cat: 'Alimentação',
+        data: todayIso(),
+      }),
+    },
+    seed: expenseSeed(),
+    session: { group: 'CASA2024', user: 'Ana' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', '', {
+    base64: 'image-base64',
+    mimeType: 'image/jpeg',
+    type: 'image',
+  });
+
+  assert.match(resposta, /mercado/);
+  assert.match(resposta, /registrado/);
+  assert.equal(firebase.pushes.length, 1);
+  assert.equal(firebase.pushes[0].value.origem, 'imagem');
+});
+
+test('AI action can register an expense when the simple parser has no expense', async () => {
+  const { firebase, service } = createService({
+    configOverrides: {
+      groqApiKey: 'fake-groq-key',
+    },
+    groqOverrides: {
+      chamarIA: async () => JSON.stringify({
+        acao: 'registrar',
+        desc: 'curso',
+        valor: 80,
+        cat: 'Educação',
+        data: todayIso(),
+      }),
+    },
+    seed: expenseSeed(),
+    session: { group: 'CASA2024', user: 'Ana' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'gasto do curso');
+
+  assert.match(resposta, /curso/);
+  assert.match(resposta, /registrado/);
+  assert.equal(firebase.pushes.length, 1);
+  assert.equal(firebase.pushes[0].value.origem, 'ia');
 });
