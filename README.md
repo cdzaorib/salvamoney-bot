@@ -62,6 +62,35 @@ Por padrão, logs escondem telefone, mensagens e transcrições. Use `LOG_SENSIT
 
 ---
 
+## Estrutura do código
+
+`server.js` fica como ponto de entrada do Express: carrega a configuração, monta os serviços e registra as rotas públicas.
+
+| Arquivo | Responsabilidade |
+|---|---|
+| `src/config.js` | Variáveis de ambiente atuais, defaults e validação |
+| `src/firebase-db.js` | Inicialização do Firebase Realtime Database |
+| `src/routes.js` | Webhook, dashboard, home e health nas rotas existentes |
+| `src/bot-service.js` | Orquestra os comandos recebidos pelo bot |
+| `src/bot/account-service.js` | Criação de código, entrada e troca de conta |
+| `src/bot/ai-media-service.js` | IA de texto, transcrição de áudio e leitura de imagem |
+| `src/bot/commands.js` | Detectores de comandos e extração do nome ao criar código |
+| `src/bot/categories.js` | Regras de categoria usadas em texto, imagem e IA |
+| `src/bot/date-utils.js` | Datas do bot, chave mensal do Firebase e nomes dos meses |
+| `src/bot/expense-service.js` | Resumos, lançamento, parcelamento e exclusão de gastos |
+| `src/bot/text-utils.js` | Normalização de texto e limpeza de chaves |
+| `src/providers/whatsapp.js` | Envio por Z-API ou Evolution |
+| `src/providers/groq.js` | Chat, transcrição, leitura de imagem e download de mídia |
+| `src/webhook-parser.js` | Leitura dos payloads recebidos no webhook |
+| `src/session-store.js` | Sessões do WhatsApp com cache e Firebase |
+| `src/message-dedupe.js` | Bloqueio em memória de mensagens repetidas |
+| `src/security.js` | Leitura e comparação de tokens de webhook/dashboard |
+| `src/safe-log.js` | Máscaras para logs de telefone, texto e mídia |
+| `src/dashboard-page.js` | HTML atual do dashboard |
+| `src/expense-parser.js` | Parser de valor, gasto simples e parcelamento |
+
+---
+
 ## Verificação local
 
 ```bash
