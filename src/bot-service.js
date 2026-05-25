@@ -16,9 +16,9 @@ const { createExpenseService } = require('./bot/expense-service');
 const { parsearGasto, parsearParcelamento } = require('./expense-parser');
 
 function defaultFirebaseOps() {
-  const { ref, get, push, set, remove } = require('firebase/database');
+  const { getFirebaseOps } = require('./firebase-db');
 
-  return { ref, get, push, set, remove };
+  return getFirebaseOps();
 }
 
 function createBotService({

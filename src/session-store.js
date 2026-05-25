@@ -1,6 +1,6 @@
 'use strict';
 
-const { ref, get, set } = require('firebase/database');
+const { get, ref, set } = require('./firebase-db');
 
 const SESSION_TTL = 5 * 60 * 1000;
 
