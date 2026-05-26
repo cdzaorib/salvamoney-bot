@@ -47,6 +47,7 @@ const MY_TAG_COMMANDS = new Set([
 const MY_PROFILE_COMMANDS = new Set([
   'meu perfil',
 ]);
+const FIND_TAG_COMMAND_PATTERN = /^(buscar|procurar|encontrar) tag(?: (.+))?$/;
 
 function defaultFirebaseOps() {
   const { getFirebaseOps } = require('./firebase-db');
@@ -76,6 +77,18 @@ function isMyTagCommand(value) {
 
 function isMyProfileCommand(value) {
   return MY_PROFILE_COMMANDS.has(normalizedCommand(value));
+}
+
+function parseFindTagCommand(value) {
+  const match = normalizedCommand(value).match(FIND_TAG_COMMAND_PATTERN);
+
+  if (!match) {
+    return null;
+  }
+
+  return {
+    shareTag: String(match[2] || '').trim().toUpperCase(),
+  };
 }
 
 function isSignupActive(sessao) {
@@ -167,6 +180,32 @@ function myProfileMessage(user) {
   ].join('\n');
 }
 
+function missingSearchTagMessage() {
+  return [
+    'Envie a tag que deseja buscar.',
+    '',
+    'Exemplo:',
+    'buscar tag ANNA-8K2P7Q',
+  ].join('\n');
+}
+
+function foundShareTagMessage(user, shareTag) {
+  return [
+    'Encontrei:',
+    '',
+    `Nome: ${user.name || '-'}`,
+    `Tag: ${user.shareTag || shareTag}`,
+  ].join('\n');
+}
+
+function notFoundShareTagMessage() {
+  return [
+    'Não encontrei ninguém com essa tag.',
+    '',
+    'Confira se digitou corretamente.',
+  ].join('\n');
+}
+
 function createBotService({
   config,
   db,
@@ -245,8 +284,22 @@ function createBotService({
   }
 
   async function processarConsultaUsuario(phone, msg) {
-    if (!isMyTagCommand(msg) && !isMyProfileCommand(msg)) {
+    const findTagCommand = parseFindTagCommand(msg);
+
+    if (!isMyTagCommand(msg) && !isMyProfileCommand(msg) && !findTagCommand) {
       return null;
+    }
+
+    if (findTagCommand) {
+      if (!findTagCommand.shareTag) {
+        return missingSearchTagMessage();
+      }
+
+      const foundUser = await userService.getUserByShareTag(findTagCommand.shareTag);
+
+      return foundUser
+        ? foundShareTagMessage(foundUser, findTagCommand.shareTag)
+        : notFoundShareTagMessage();
     }
 
     const user = await userService.getUserByPhone(phone);

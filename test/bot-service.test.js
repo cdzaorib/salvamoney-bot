@@ -197,6 +197,13 @@ function createSignupUserService(initialUsers = {}) {
 
       return user;
     },
+    async getUserByShareTag(shareTag) {
+      calls.push({ method: 'getUserByShareTag', shareTag });
+
+      return Array.from(users.values()).find(
+        (user) => String(user.shareTag || '').toUpperCase() === shareTag
+      ) || null;
+    },
   };
 
   return service;
@@ -641,6 +648,129 @@ test('profile lookup commands do not register expenses', async () => {
 
   await service.processarMensagem('5511999999999', 'minha tag');
   await service.processarMensagem('5511999999999', 'meu perfil');
+
+  assert.equal(firebase.pushes.length, 0);
+});
+
+test('buscar tag returns a public user match without exposing phone or email', async () => {
+  const userService = createSignupUserService({
+    5511999999999: {
+      phone: '5511999999999',
+      name: 'Anna',
+      email: 'anna@email.com',
+      shareTag: 'ANNA-8K2P7Q',
+    },
+  });
+  const { firebase, service } = createService({
+    seed: expenseSeed(),
+    session: { group: 'CASA2024', user: 'Ana' },
+    userService,
+  });
+  const resposta = await service.processarMensagem('5511888888888', 'buscar tag anna-8k2p7q');
+
+  assert.equal(resposta, [
+    'Encontrei:',
+    '',
+    'Nome: Anna',
+    'Tag: ANNA-8K2P7Q',
+  ].join('\n'));
+  assert.deepEqual(userService.calls, [{
+    method: 'getUserByShareTag',
+    shareTag: 'ANNA-8K2P7Q',
+  }]);
+  assert.doesNotMatch(resposta, /5511999999999/);
+  assert.doesNotMatch(resposta, /anna@email\.com/);
+  assert.equal(firebase.pushes.length, 0);
+});
+
+test('buscar tag returns not found when shareTag does not exist', async () => {
+  const userService = createSignupUserService();
+  const { firebase, service } = createService({
+    seed: expenseSeed(),
+    session: { group: 'CASA2024', user: 'Ana' },
+    userService,
+  });
+  const resposta = await service.processarMensagem('5511888888888', 'buscar tag NAO-8K2P7Q');
+
+  assert.equal(resposta, [
+    'Não encontrei ninguém com essa tag.',
+    '',
+    'Confira se digitou corretamente.',
+  ].join('\n'));
+  assert.deepEqual(userService.calls, [{
+    method: 'getUserByShareTag',
+    shareTag: 'NAO-8K2P7Q',
+  }]);
+  assert.equal(firebase.pushes.length, 0);
+});
+
+test('buscar tag without shareTag asks for the tag', async () => {
+  const userService = createSignupUserService();
+  const { firebase, service } = createService({
+    seed: expenseSeed(),
+    session: { group: 'CASA2024', user: 'Ana' },
+    userService,
+  });
+  const resposta = await service.processarMensagem('5511888888888', 'buscar tag');
+
+  assert.equal(resposta, [
+    'Envie a tag que deseja buscar.',
+    '',
+    'Exemplo:',
+    'buscar tag ANNA-8K2P7Q',
+  ].join('\n'));
+  assert.deepEqual(userService.calls, []);
+  assert.equal(firebase.pushes.length, 0);
+});
+
+test('procurar tag and encontrar tag work as aliases', async () => {
+  const userService = createSignupUserService({
+    5511999999999: {
+      phone: '5511999999999',
+      name: 'Anna',
+      email: 'anna@email.com',
+      shareTag: 'ANNA-8K2P7Q',
+    },
+  });
+  const { firebase, service } = createService({
+    seed: expenseSeed(),
+    session: { group: 'CASA2024', user: 'Ana' },
+    userService,
+  });
+  const procurar = await service.processarMensagem('5511888888888', 'procurar tag ANNA-8K2P7Q');
+  const encontrar = await service.processarMensagem('5511888888888', 'encontrar tag ANNA-8K2P7Q');
+
+  assert.match(procurar, /Encontrei/);
+  assert.match(encontrar, /Encontrei/);
+  assert.deepEqual(userService.calls, [
+    {
+      method: 'getUserByShareTag',
+      shareTag: 'ANNA-8K2P7Q',
+    },
+    {
+      method: 'getUserByShareTag',
+      shareTag: 'ANNA-8K2P7Q',
+    },
+  ]);
+  assert.equal(firebase.pushes.length, 0);
+});
+
+test('buscar tag command does not register expenses', async () => {
+  const userService = createSignupUserService({
+    5511999999999: {
+      phone: '5511999999999',
+      name: 'Anna',
+      email: 'anna@email.com',
+      shareTag: 'ANNA-8K2P7Q',
+    },
+  });
+  const { firebase, service } = createService({
+    seed: expenseSeed(),
+    session: { group: 'CASA2024', user: 'Ana' },
+    userService,
+  });
+
+  await service.processarMensagem('5511888888888', 'buscar tag ANNA-8K2P7Q');
 
   assert.equal(firebase.pushes.length, 0);
 });
