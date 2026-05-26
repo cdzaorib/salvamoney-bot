@@ -60,6 +60,29 @@ Configure `DASHBOARD_TOKEN` para proteger `/api/dashboard` e `/api/gasto/:id`. C
 
 Por padrão, logs escondem telefone, mensagens e transcrições. Use `LOG_SENSITIVE_DATA=true` somente em diagnóstico controlado.
 
+### Firebase Realtime Database
+
+As regras do Realtime Database devem bloquear leitura e escrita direta do público. O frontend não deve acessar o Firebase diretamente; toda consulta ou alteração de dados precisa passar pelo backend.
+
+O backend usa `firebase-admin`, que autentica com credenciais de service account e ignora as Security Rules do Realtime Database. Por isso, rules fechadas protegem contra acesso público direto sem impedir o bot, webhook ou dashboard backend de ler e gravar dados.
+
+As rules ficam em `database.rules.json`:
+
+```json
+{
+  "rules": {
+    ".read": false,
+    ".write": false
+  }
+}
+```
+
+Para aplicar manualmente, após revisar o projeto/ambiente:
+
+```bash
+firebase database:rules:set database.rules.json --project SEU_PROJECT_ID
+```
+
 ---
 
 ## Estrutura do código
