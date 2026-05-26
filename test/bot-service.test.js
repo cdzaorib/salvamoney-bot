@@ -1049,12 +1049,17 @@ test('parcelamento writes one installment per month to the fake Firebase tree', 
   assert.match(resposta, /TV/);
   assert.match(resposta, /12x de R\$ 100,00/);
   assert.equal(firebase.pushes.length, 12);
-  assert.equal(firebase.pushes[0].value.origem, 'parcelamento');
-  assert.deepEqual(firebase.pushes[0].value.parcela, {
-    numero: 1,
-    total: 12,
-    valorTotal: 1200,
-  });
+  assert.equal(firebase.pushes[0].value.desc, 'TV (1/12x)');
+  assert.equal(firebase.pushes[0].value.origem, 'bot');
+  assert.equal(firebase.pushes[0].value.parcelaNum, 1);
+  assert.equal(firebase.pushes[0].value.parcelaTotal, 12);
+  assert.equal(firebase.pushes[0].value.parcela, undefined);
+  assert.equal(typeof firebase.pushes[0].value.parcelaId, 'string');
+  assert.ok(firebase.pushes[0].value.parcelaId);
+  assert.equal(firebase.pushes[11].value.desc, 'TV (12/12x)');
+  assert.equal(firebase.pushes[11].value.parcelaId, firebase.pushes[0].value.parcelaId);
+  assert.equal(firebase.pushes[11].value.parcelaNum, 12);
+  assert.equal(firebase.pushes[11].value.parcelaTotal, 12);
   assert.equal(firebase.sets.length, 12);
   assert.deepEqual(firebase.sets[0], {
     path: `transactionsByUser/5511999999999/${firebase.pushes[0].path.split('/').pop()}/push_1`,
@@ -1067,6 +1072,58 @@ test('parcelamento writes one installment per month to the fake Firebase tree', 
       sourcePath: `${firebase.pushes[0].path}/push_1`,
     },
   });
+});
+
+test('parcelamento rounds installment values for 100 in 3x using the site-compatible schema', async () => {
+  const { firebase, service } = createService({
+    seed: expenseSeed(),
+    session: { group: 'CASA2024', user: 'Ana' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'parcelei 100 compra em 3x');
+
+  assert.match(resposta, /3x de R\$ 33,33/);
+  assert.equal(firebase.pushes.length, 3);
+
+  const parcelaId = firebase.pushes[0].value.parcelaId;
+
+  assert.ok(parcelaId);
+
+  firebase.pushes.forEach((push, index) => {
+    assert.match(push.path, /grupos\/CASA2024\/usuarios\/Ana\/gastos\//);
+    assert.equal(push.value.desc, `compra (${index + 1}/3x)`);
+    assert.equal(push.value.value, 33.33);
+    assert.equal(push.value.user, 'Ana');
+    assert.equal(push.value.viaBot, true);
+    assert.equal(push.value.parcelaId, parcelaId);
+    assert.equal(push.value.parcelaNum, index + 1);
+    assert.equal(push.value.parcelaTotal, 3);
+    assert.equal(push.value.origem, 'bot');
+    assert.equal(push.value.parcela, undefined);
+  });
+});
+
+test('audio transcription can register parcelamento through the current text flow', async () => {
+  const { firebase, service } = createService({
+    groqOverrides: {
+      transcreverAudio: async () => 'parcelei 300 fone em 3x',
+    },
+    seed: expenseSeed(),
+    session: { group: 'CASA2024', user: 'Ana' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', '', {
+    base64: 'audio-base64',
+    mimeType: 'audio/ogg',
+    type: 'audio',
+  });
+
+  assert.match(resposta, /fone/);
+  assert.match(resposta, /3x de R\$ 100,00/);
+  assert.equal(firebase.pushes.length, 3);
+  assert.equal(firebase.pushes[0].value.desc, 'fone (1/3x)');
+  assert.equal(firebase.pushes[0].value.origem, 'bot');
+  assert.equal(firebase.pushes[0].value.parcelaNum, 1);
+  assert.equal(firebase.pushes[0].value.parcelaTotal, 3);
+  assert.equal(firebase.pushes[0].value.parcela, undefined);
 });
 
 test('audio transcription reuses the current text expense flow', async () => {

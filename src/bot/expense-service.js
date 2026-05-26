@@ -165,6 +165,7 @@ ${siteUrl}`;
 
     const category = detectarCategoria(desc);
     const installmentValue = Math.round((valor / parcelas) * 100) / 100;
+    const parcelaId = String(Date.now());
     const today = new Date();
 
     for (let index = 0; index < parcelas; index++) {
@@ -176,18 +177,16 @@ ${siteUrl}`;
         phone: session.phone,
         user: session.user,
         expense: {
-          desc: `${desc} (${index + 1}/${parcelas})`,
+          desc: `${desc} (${index + 1}/${parcelas}x)`,
           value: installmentValue,
           cat: category,
           date: todayIso(date),
           user: session.user,
           viaBot: true,
-          origem: 'parcelamento',
-          parcela: {
-            numero: index + 1,
-            total: parcelas,
-            valorTotal: valor,
-          },
+          parcelaId,
+          parcelaNum: index + 1,
+          parcelaTotal: parcelas,
+          origem: 'bot',
           createdAt: new Date().toISOString(),
         },
       });
