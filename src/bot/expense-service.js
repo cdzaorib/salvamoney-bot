@@ -1,6 +1,7 @@
 'use strict';
 
 const { parseMoney } = require('../expense-parser');
+const { createTransactionStore } = require('../services/transaction-store');
 const { categoriaFinal, detectarCategoria } = require('./categories');
 const { MESES } = require('./date-utils');
 const { normalizeText } = require('./text-utils');
@@ -17,16 +18,17 @@ function createExpenseService({
   db,
   firebaseOps,
   siteUrl,
+  transactionStore: providedTransactionStore,
 }) {
   const { dateParts, monthKey, todayIso } = dateUtils;
-  const { get, push, ref, remove } = firebaseOps;
+  const transactionStore = providedTransactionStore || createTransactionStore({
+    db,
+    firebaseOps,
+    monthKey,
+  });
 
   async function getGastosMesComIds(group, user, date) {
-    const snap = await get(ref(db, `grupos/${group}/usuarios/${user}/gastos/${monthKey(date)}`));
-
-    return Object.entries(snap.val() || {})
-      .map(([id, item]) => ({ id, ...item }))
-      .filter((item) => item && Number.isFinite(Number(item.value)));
+    return await transactionStore.listMonthlyExpensesWithIds({ date, group, user });
   }
 
   async function getResumoTexto(group, user) {
@@ -168,20 +170,25 @@ ${siteUrl}`;
     for (let index = 0; index < parcelas; index++) {
       const date = new Date(today.getFullYear(), today.getMonth() + index, today.getDate());
 
-      await push(ref(db, `grupos/${session.group}/usuarios/${session.user}/gastos/${monthKey(date)}`), {
-        desc: `${desc} (${index + 1}/${parcelas})`,
-        value: installmentValue,
-        cat: category,
-        date: todayIso(date),
+      await transactionStore.saveExpense({
+        date,
+        group: session.group,
         user: session.user,
-        viaBot: true,
-        origem: 'parcelamento',
-        parcela: {
-          numero: index + 1,
-          total: parcelas,
-          valorTotal: valor,
+        expense: {
+          desc: `${desc} (${index + 1}/${parcelas})`,
+          value: installmentValue,
+          cat: category,
+          date: todayIso(date),
+          user: session.user,
+          viaBot: true,
+          origem: 'parcelamento',
+          parcela: {
+            numero: index + 1,
+            total: parcelas,
+            valorTotal: valor,
+          },
+          createdAt: new Date().toISOString(),
         },
-        createdAt: new Date().toISOString(),
       });
     }
 
@@ -206,15 +213,19 @@ ${siteUrl}`;
 
     const category = categoriaFinal(description, expense.cat);
 
-    await push(ref(db, `grupos/${session.group}/usuarios/${session.user}/gastos/${monthKey()}`), {
-      desc: description,
-      value,
-      cat: category,
-      date: expense.data || todayIso(),
+    await transactionStore.saveExpense({
+      group: session.group,
       user: session.user,
-      viaBot: true,
-      origem: source,
-      createdAt: new Date().toISOString(),
+      expense: {
+        desc: description,
+        value,
+        cat: category,
+        date: expense.data || todayIso(),
+        user: session.user,
+        viaBot: true,
+        origem: source,
+        createdAt: new Date().toISOString(),
+      },
     });
 
     return `✅ *${description}* registrado!
@@ -228,7 +239,11 @@ Se foi errado: _apagar último_`;
   }
 
   async function apagarGastoPorId(session, id) {
-    await remove(ref(db, `grupos/${session.group}/usuarios/${session.user}/gastos/${monthKey()}/${id}`));
+    await transactionStore.removeExpenseById({
+      group: session.group,
+      id,
+      user: session.user,
+    });
   }
 
   async function apagarGastoPorTexto(session, text) {
