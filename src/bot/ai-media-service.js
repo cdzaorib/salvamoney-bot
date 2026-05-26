@@ -18,6 +18,10 @@ function createAiMediaService({
   const { analisarImagem, baixarMediaComoBase64, chamarIA, transcreverAudio } = groq;
   const { logMediaUrl, logText, maskPhone } = safeLog;
 
+  function errorDetails(err) {
+    return err.response?.data || err.error || err.message;
+  }
+
   async function processarComIA(texto, sessao) {
     const resumo = await getResumoTexto(sessao.group, sessao.user);
     const hoje = todayIso();
@@ -103,7 +107,7 @@ Nunca invente valores. Se não informou valor ao registrar, pergunte.`;
     try {
       return await processarComIA(texto, sessao);
     } catch (err) {
-      console.error('Erro IA:', err.response?.data || err.message);
+      console.error('Erro IA:', errorDetails(err));
 
       return undefined;
     }
@@ -159,7 +163,7 @@ Nunca invente valores. Se não informou valor ao registrar, pergunte.`;
 
       return await processarMensagem(phone, transcricao, null);
     } catch (err) {
-      console.error('Erro áudio:', err.response?.data || err.message);
+      console.error('Erro áudio:', errorDetails(err));
 
       return 'Erro ao processar áudio. Tente mandar em texto por enquanto.';
     }
@@ -169,7 +173,7 @@ Nunca invente valores. Se não informou valor ao registrar, pergunte.`;
     try {
       return await processarImagem(mediaInfo.base64, mediaInfo.mimeType, sessao);
     } catch (err) {
-      console.error('Erro imagem:', err.message);
+      console.error('Erro imagem:', errorDetails(err));
 
       return 'Não consegui ler a imagem. Tente mandar com legenda: _mercado 45,90_';
     }

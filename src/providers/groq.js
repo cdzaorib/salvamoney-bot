@@ -1,9 +1,13 @@
 'use strict';
 
 const axios = require('axios');
-const FormData = require('form-data');
+const Groq = require('groq-sdk');
 
 function createGroqClient(config) {
+  const client = config.groqApiKey
+    ? new Groq({ apiKey: config.groqApiKey })
+    : null;
+
   function limparBase64(v = '') {
     return String(v).replace(/^data:.*?;base64,/, '').trim();
   }
@@ -26,8 +30,7 @@ function createGroqClient(config) {
       throw new Error('GROQ_API_KEY ausente.');
     }
 
-    const r = await axios.post(
-      config.groqChatUrl,
+    const r = await client.chat.completions.create(
       {
         model: config.groqModel,
         messages: mensagens,
@@ -35,15 +38,11 @@ function createGroqClient(config) {
         max_tokens: 500,
       },
       {
-        headers: {
-          Authorization: `Bearer ${config.groqApiKey}`,
-          'Content-Type': 'application/json',
-        },
         timeout: 30000,
       }
     );
 
-    return r.data?.choices?.[0]?.message?.content?.trim() || '';
+    return r.choices?.[0]?.message?.content?.trim() || '';
   }
 
   async function transcreverAudio(base64Audio, mimeType = 'audio/ogg') {
@@ -57,28 +56,21 @@ function createGroqClient(config) {
       throw new Error('Áudio maior que 24MB.');
     }
 
-    const form = new FormData();
-
-    form.append('file', buffer, {
-      filename: 'audio.ogg',
-      contentType: mimeType || 'audio/ogg',
-    });
-
-    form.append('model', config.groqAudioModel);
-    form.append('language', 'pt');
-    form.append('response_format', 'json');
-
-    const r = await axios.post(config.groqAudioUrl, form, {
-      headers: {
-        Authorization: `Bearer ${config.groqApiKey}`,
-        ...form.getHeaders(),
+    const r = await client.audio.transcriptions.create(
+      {
+        file: await Groq.toFile(buffer, 'audio.ogg', {
+          type: mimeType || 'audio/ogg',
+        }),
+        model: config.groqAudioModel,
+        language: 'pt',
+        response_format: 'json',
       },
-      timeout: 60000,
-      maxContentLength: Infinity,
-      maxBodyLength: Infinity,
-    });
+      {
+        timeout: 60000,
+      }
+    );
 
-    return r.data?.text?.trim() || '';
+    return r.text?.trim() || '';
   }
 
   async function analisarImagem(base64Image, mimeType = 'image/jpeg') {
@@ -88,8 +80,7 @@ function createGroqClient(config) {
 
     const imageUrl = `data:${mimeType || 'image/jpeg'};base64,${limparBase64(base64Image)}`;
 
-    const r = await axios.post(
-      config.groqChatUrl,
+    const r = await client.chat.completions.create(
       {
         model: config.groqVisionModel,
         messages: [
@@ -140,17 +131,11 @@ Nunca invente valor.`,
         max_tokens: 400,
       },
       {
-        headers: {
-          Authorization: `Bearer ${config.groqApiKey}`,
-          'Content-Type': 'application/json',
-        },
         timeout: 60000,
-        maxContentLength: Infinity,
-        maxBodyLength: Infinity,
       }
     );
 
-    return r.data?.choices?.[0]?.message?.content?.trim() || '';
+    return r.choices?.[0]?.message?.content?.trim() || '';
   }
 
   return {
