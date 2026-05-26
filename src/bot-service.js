@@ -108,6 +108,13 @@ function hasLinkedAccountSession(sessao) {
   return Boolean(sessao?.user && sessao?.group);
 }
 
+function sessionWithPhone(sessao, phone) {
+  return {
+    ...sessao,
+    phone,
+  };
+}
+
 function clearSignupFields(sessao) {
   const cleaned = { ...(sessao || {}) };
 
@@ -236,7 +243,7 @@ function createBotService({
   const expenseService = createExpenseService({
     dateUtils,
     db,
-    firebaseOps: { get, push, ref, remove },
+    firebaseOps: { get, push, ref, remove, set },
     siteUrl: SITE_URL,
   });
   const {
@@ -548,6 +555,8 @@ Se outra pessoa entrar no mesmo código que você, as contas divididas do grupo 
 ${SITE_URL}`;
     }
 
+    const sessaoComPhone = sessionWithPhone(sessao, phone);
+
     // ── ÁUDIO ──
     if (mediaInfo?.type === 'audio') {
       return await aiMediaService.processarAudio(phone, mediaInfo, processarMensagem);
@@ -555,27 +564,27 @@ ${SITE_URL}`;
 
     // ── IMAGEM ──
     if (mediaInfo?.type === 'image') {
-      return await aiMediaService.processarImagemComFallback(mediaInfo, sessao);
+      return await aiMediaService.processarImagemComFallback(mediaInfo, sessaoComPhone);
     }
 
     // ── HOJE ──
     if (isTodayCommand(msgMin)) {
-      return await montarResumoHoje(sessao);
+      return await montarResumoHoje(sessaoComPhone);
     }
 
     // ── RESUMO ──
     if (isSummaryCommand(msgMin)) {
-      return await montarResumoFormatado(sessao);
+      return await montarResumoFormatado(sessaoComPhone);
     }
 
     // ── LISTAR ──
     if (isListCommand(msgMin)) {
-      return await montarListaGastos(sessao);
+      return await montarListaGastos(sessaoComPhone);
     }
 
     // ── APAGAR ──
     if (isDeleteCommand(msgMin)) {
-      return await apagarGastoPorTexto(sessao, msg);
+      return await apagarGastoPorTexto(sessaoComPhone, msg);
     }
 
     // ── PARCELAMENTO ──
@@ -583,7 +592,7 @@ ${SITE_URL}`;
       const parcela = parsearParcelamento(msg);
 
       if (parcela) {
-        return await registrarParcelamento(sessao, parcela);
+        return await registrarParcelamento(sessaoComPhone, parcela);
       }
     }
 
@@ -591,7 +600,7 @@ ${SITE_URL}`;
     const gasto = parsearGasto(msg);
 
     if (gasto) {
-      return await registrarGasto(sessao, {
+      return await registrarGasto(sessaoComPhone, {
         desc: gasto.desc,
         valor: gasto.valor,
         cat: detectarCategoria(gasto.desc),
@@ -600,7 +609,7 @@ ${SITE_URL}`;
     }
 
     // ── IA ──
-    const respostaIA = await aiMediaService.processarTextoComIA(msg, sessao);
+    const respostaIA = await aiMediaService.processarTextoComIA(msg, sessaoComPhone);
 
     if (respostaIA !== undefined) {
       return respostaIA;

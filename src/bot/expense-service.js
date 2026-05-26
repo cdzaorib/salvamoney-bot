@@ -173,6 +173,7 @@ ${siteUrl}`;
       await transactionStore.saveExpense({
         date,
         group: session.group,
+        phone: session.phone,
         user: session.user,
         expense: {
           desc: `${desc} (${index + 1}/${parcelas})`,
@@ -215,6 +216,7 @@ ${siteUrl}`;
 
     await transactionStore.saveExpense({
       group: session.group,
+      phone: session.phone,
       user: session.user,
       expense: {
         desc: description,

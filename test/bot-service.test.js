@@ -867,6 +867,17 @@ test('normal text expense still works when signup is not active', async () => {
   assert.equal(firebase.pushes.length, 1);
   assert.match(firebase.pushes[0].path, /grupos\/CASA2024\/usuarios\/Ana\/gastos\//);
   assert.equal(firebase.pushes[0].value.origem, 'texto');
+  assert.deepEqual(firebase.sets, [{
+    path: `transactionsByUser/5511999999999/${currentMonthKey()}/push_1`,
+    value: {
+      ...firebase.pushes[0].value,
+      legacyGroup: 'CASA2024',
+      legacyUser: 'Ana',
+      legacyExpenseId: 'push_1',
+      migrated: false,
+      sourcePath: `${firebase.pushes[0].path}/push_1`,
+    },
+  }]);
 });
 
 test('normal text expense asks to link an account after sair da conta', async () => {
@@ -884,26 +895,41 @@ test('normal text expense asks to link an account after sair da conta', async ()
 
 test('resumo summarizes the current month session expenses', async () => {
   const { service } = createService({
-    seed: expenseSeed({
-      gasto_1: {
-        cat: 'Alimentação',
-        createdAt: '2026-05-20T10:00:00.000Z',
-        desc: 'almoco',
-        value: 35,
+    seed: {
+      ...expenseSeed({
+        gasto_1: {
+          cat: 'Alimentação',
+          createdAt: '2026-05-20T10:00:00.000Z',
+          desc: 'almoco',
+          value: 35,
+        },
+        gasto_2: {
+          cat: 'Transporte',
+          createdAt: '2026-05-20T11:00:00.000Z',
+          desc: 'uber',
+          value: 20,
+        },
+      }),
+      transactionsByUser: {
+        5511999999999: {
+          [currentMonthKey()]: {
+            novo_1: {
+              cat: 'Lazer',
+              createdAt: '2026-05-20T12:00:00.000Z',
+              desc: 'novo caminho',
+              value: 999,
+            },
+          },
+        },
       },
-      gasto_2: {
-        cat: 'Transporte',
-        createdAt: '2026-05-20T11:00:00.000Z',
-        desc: 'uber',
-        value: 20,
-      },
-    }),
+    },
     session: { group: 'CASA2024', user: 'Ana' },
   });
   const resposta = await service.processarMensagem('5511999999999', 'resumo');
 
   assert.match(resposta, /Resumo de/);
   assert.match(resposta, /Total: R\$ 55,00/);
+  assert.doesNotMatch(resposta, /novo caminho/);
 });
 
 test('gastos hoje only totals items recorded today', async () => {
@@ -935,15 +961,30 @@ test('gastos hoje only totals items recorded today', async () => {
 
 test('listar gastos prints recent month expenses', async () => {
   const { service } = createService({
-    seed: expenseSeed({
-      gasto_1: {
-        cat: 'Alimentação',
-        createdAt: '2026-05-20T10:00:00.000Z',
-        date: todayIso(),
-        desc: 'mercado',
-        value: 45,
+    seed: {
+      ...expenseSeed({
+        gasto_1: {
+          cat: 'Alimentação',
+          createdAt: '2026-05-20T10:00:00.000Z',
+          date: todayIso(),
+          desc: 'mercado',
+          value: 45,
+        },
+      }),
+      transactionsByUser: {
+        5511999999999: {
+          [currentMonthKey()]: {
+            novo_1: {
+              cat: 'Lazer',
+              createdAt: '2026-05-20T12:00:00.000Z',
+              date: todayIso(),
+              desc: 'novo caminho',
+              value: 999,
+            },
+          },
+        },
       },
-    }),
+    },
     session: { group: 'CASA2024', user: 'Ana' },
   });
   const resposta = await service.processarMensagem('5511999999999', 'listar gastos');
@@ -951,24 +992,38 @@ test('listar gastos prints recent month expenses', async () => {
   assert.match(resposta, /Últimos gastos/);
   assert.match(resposta, /mercado/);
   assert.match(resposta, /R\$ 45,00/);
+  assert.doesNotMatch(resposta, /novo caminho/);
 });
 
 test('apagar ultimo removes the latest expense in the fake Firebase tree', async () => {
   const { firebase, service } = createService({
-    seed: expenseSeed({
-      antigo: {
-        cat: 'Alimentação',
-        createdAt: '2026-05-20T10:00:00.000Z',
-        desc: 'almoco',
-        value: 35,
+    seed: {
+      ...expenseSeed({
+        antigo: {
+          cat: 'Alimentação',
+          createdAt: '2026-05-20T10:00:00.000Z',
+          desc: 'almoco',
+          value: 35,
+        },
+        ultimo: {
+          cat: 'Transporte',
+          createdAt: '2026-05-20T11:00:00.000Z',
+          desc: 'uber',
+          value: 20,
+        },
+      }),
+      transactionsByUser: {
+        5511999999999: {
+          [currentMonthKey()]: {
+            ultimo: {
+              cat: 'Transporte',
+              desc: 'uber',
+              value: 20,
+            },
+          },
+        },
       },
-      ultimo: {
-        cat: 'Transporte',
-        createdAt: '2026-05-20T11:00:00.000Z',
-        desc: 'uber',
-        value: 20,
-      },
-    }),
+    },
     session: { group: 'CASA2024', user: 'Ana' },
   });
   const resposta = await service.processarMensagem('5511999999999', 'apagar ultimo');
@@ -976,7 +1031,12 @@ test('apagar ultimo removes the latest expense in the fake Firebase tree', async
   assert.match(resposta, /Apaguei/);
   assert.match(resposta, /uber/);
   assert.equal(firebase.removals.length, 1);
-  assert.match(firebase.removals[0], /\/ultimo$/);
+  assert.equal(firebase.removals[0], `grupos/CASA2024/usuarios/Ana/gastos/${currentMonthKey()}/ultimo`);
+  assert.deepEqual(firebase.getValue(`transactionsByUser/5511999999999/${currentMonthKey()}/ultimo`), {
+    cat: 'Transporte',
+    desc: 'uber',
+    value: 20,
+  });
 });
 
 test('parcelamento writes one installment per month to the fake Firebase tree', async () => {
@@ -994,6 +1054,18 @@ test('parcelamento writes one installment per month to the fake Firebase tree', 
     numero: 1,
     total: 12,
     valorTotal: 1200,
+  });
+  assert.equal(firebase.sets.length, 12);
+  assert.deepEqual(firebase.sets[0], {
+    path: `transactionsByUser/5511999999999/${firebase.pushes[0].path.split('/').pop()}/push_1`,
+    value: {
+      ...firebase.pushes[0].value,
+      legacyGroup: 'CASA2024',
+      legacyUser: 'Ana',
+      legacyExpenseId: 'push_1',
+      migrated: false,
+      sourcePath: `${firebase.pushes[0].path}/push_1`,
+    },
   });
 });
 
