@@ -21,6 +21,10 @@ function createTransactionStore({
     return `grupos/${group}/usuarios/${user}/gastos/${expenseMonthKey}`;
   }
 
+  function fixedExpensesPath(group, user) {
+    return `grupos/${group}/usuarios/${user}/fixos`;
+  }
+
   function transactionsByUserMonthlyPath(phone, date) {
     return `transactionsByUser/${normalizePhone(phone)}/${monthKey(date)}`;
   }
@@ -43,6 +47,14 @@ function createTransactionStore({
 
   async function listMonthlyExpensesWithIds({ group, user, date }) {
     const snap = await get(ref(db, legacyMonthlyExpensesPath(group, user, date)));
+
+    return Object.entries(snap.val() || {})
+      .map(([id, item]) => ({ id, ...item }))
+      .filter((item) => item && Number.isFinite(Number(item.value)));
+  }
+
+  async function listFixedExpensesWithIds({ group, user }) {
+    const snap = await get(ref(db, fixedExpensesPath(group, user)));
 
     return Object.entries(snap.val() || {})
       .map(([id, item]) => ({ id, ...item }))
@@ -124,6 +136,10 @@ function createTransactionStore({
     return legacyResult;
   }
 
+  async function saveFixedExpense({ fixedExpense, group, user }) {
+    return await push(ref(db, fixedExpensesPath(group, user)), fixedExpense);
+  }
+
   async function removeExpenseById({
     group,
     user,
@@ -140,6 +156,10 @@ function createTransactionStore({
     if (removePhoneCopy && normalizePhone(phone)) {
       await remove(ref(db, `${transactionsByUserMonthlyPathByMonthKey(phone, resolvedMonthKey)}/${id}`));
     }
+  }
+
+  async function removeFixedExpenseById({ group, id, user }) {
+    await remove(ref(db, `${fixedExpensesPath(group, user)}/${id}`));
   }
 
   async function listExpensesByParcelaId({ group, user, parcelaId }) {
@@ -175,17 +195,21 @@ function createTransactionStore({
   }
 
   return {
+    fixedExpensesPath,
     legacyExpensePath,
     legacyMonthlyExpensesPath,
     legacyMonthlyExpensesPathByMonthKey,
     listAllExpensesWithIds,
     listExpenseMonths,
+    listFixedExpensesWithIds,
     listExpensesByParcelaId,
     listMonthlyExpensesWithIds,
     removeExpenseById,
+    removeFixedExpenseById,
     removeExpensesByParcelaId,
     saveExpense,
     saveExpenseByPhone,
+    saveFixedExpense,
     transactionsByUserMonthlyPath,
     transactionsByUserMonthlyPathByMonthKey,
   };

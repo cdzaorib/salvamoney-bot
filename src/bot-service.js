@@ -13,6 +13,7 @@ const { createAiMediaService } = require('./bot/ai-media-service');
 const { detectarCategoria } = require('./bot/categories');
 const { MESES, createDateUtils } = require('./bot/date-utils');
 const { createExpenseService } = require('./bot/expense-service');
+const { createFixedExpenseService } = require('./bot/fixed-expense-service');
 const { normalizeText } = require('./bot/text-utils');
 const { parsearGasto, parsearParcelamento } = require('./expense-parser');
 const {
@@ -106,10 +107,6 @@ function isSignupActive(sessao) {
 
 function hasLinkedAccountSession(sessao) {
   return Boolean(sessao?.user && sessao?.group);
-}
-
-function hasExpenseSelectionPendingDelete(sessao) {
-  return sessao?.pendingDelete?.type === 'expense_selection';
 }
 
 function hasPendingDelete(sessao) {
@@ -281,6 +278,11 @@ function createBotService({
     registrarGasto,
     registrarParcelamento,
   } = expenseService;
+  const fixedExpenseService = createFixedExpenseService({
+    dateUtils,
+    db,
+    firebaseOps: { get, push, ref, remove, set },
+  });
   const accountService = createAccountService({
     db,
     firebaseOps: { get, ref, set },
@@ -369,6 +371,21 @@ function createBotService({
       }
 
       const resposta = await apagarGastoSelecionado(sessionWithPhone(sessao, phone), candidates[option - 1]);
+
+      await clearPendingDeleteSession(phone, sessao);
+
+      return resposta;
+    }
+
+    if (pendingDelete.type === 'fixed_expense_selection') {
+      if (!Number.isInteger(option) || option < 1 || option > candidates.length) {
+        return pendingDeleteInvalidChoiceMessage(pendingDelete);
+      }
+
+      const resposta = await fixedExpenseService.removerFixoSelecionado(
+        sessionWithPhone(sessao, phone),
+        candidates[option - 1]
+      );
 
       await clearPendingDeleteSession(phone, sessao);
 
@@ -618,7 +635,7 @@ function createBotService({
       return await logoutAccountSession(phone, sessao);
     }
 
-    if (hasExpenseSelectionPendingDelete(sessao) && isDeleteStartCommand(msg)) {
+    if (hasPendingDelete(sessao) && isDeleteStartCommand(msg)) {
       await clearPendingDeleteSession(phone, sessao);
       sessao = clearPendingDeleteFields(sessao);
     }
@@ -685,6 +702,20 @@ ${SITE_URL}`;
     // ── IMAGEM ──
     if (mediaInfo?.type === 'image') {
       return await aiMediaService.processarImagemComFallback(mediaInfo, sessaoComPhone);
+    }
+
+    const respostaFixo = await fixedExpenseService.processarComandoFixo(sessaoComPhone, msg, {
+      createPendingSelection: true,
+    });
+
+    if (respostaFixo) {
+      if (respostaFixo?.pendingDelete) {
+        await savePendingDeleteSession(phone, sessao, respostaFixo.pendingDelete);
+
+        return respostaFixo.message;
+      }
+
+      return respostaFixo;
     }
 
     // ── HOJE ──

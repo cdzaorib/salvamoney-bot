@@ -238,6 +238,44 @@ function installmentDeleteSeed() {
   };
 }
 
+function fixedExpenseSeed() {
+  return {
+    grupos: {
+      CASA2024: {
+        usuarios: {
+          Ana: {
+            fixos: {
+              fixo_internet: {
+                cat: 'Moradia',
+                desc: 'internet',
+                dia: 10,
+                value: 99.9,
+              },
+              fixo_academia: {
+                cat: 'Academia',
+                desc: 'academia',
+                dia: 5,
+                value: 120,
+              },
+            },
+            gastos: {
+              [currentMonthKey()]: {
+                gasto_internet: {
+                  cat: 'Moradia',
+                  createdAt: '2026-05-20T10:00:00.000Z',
+                  date: todayIso(),
+                  desc: 'internet',
+                  value: 99.9,
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  };
+}
+
 function createService({
   configOverrides = {},
   groqOverrides = {},
@@ -1156,6 +1194,178 @@ test('listar gastos prints recent month expenses', async () => {
   assert.match(resposta, /mercado/);
   assert.match(resposta, /R\$ 45,00/);
   assert.doesNotMatch(resposta, /novo caminho/);
+});
+
+test('cadastrar fixo with day saves the site-compatible fixed expense schema', async () => {
+  const { firebase, service } = createService({
+    seed: expenseSeed(),
+    session: { group: 'CASA2024', user: 'Ana' },
+  });
+  const resposta = await service.processarMensagem(
+    '5511999999999',
+    'gasto fixo de 89,90 com internet todo dia 10'
+  );
+
+  assert.match(resposta, /Gasto fixo cadastrado/);
+  assert.match(resposta, /internet/);
+  assert.match(resposta, /R\$ 89,90/);
+  assert.match(resposta, /Dia: 10/);
+  assert.match(resposta, /não gerou gasto mensal agora/);
+  assert.deepEqual(firebase.pushes, [{
+    id: 'push_1',
+    path: 'grupos/CASA2024/usuarios/Ana/fixos',
+    value: {
+      desc: 'internet',
+      value: 89.9,
+      cat: 'Moradia',
+      dia: 10,
+    },
+  }]);
+  assert.deepEqual(firebase.getValue('grupos/CASA2024/usuarios/Ana/fixos/push_1'), {
+    desc: 'internet',
+    value: 89.9,
+    cat: 'Moradia',
+    dia: 10,
+  });
+});
+
+test('cadastrar fixo without day asks for the day and does not save', async () => {
+  const { firebase, service } = createService({
+    seed: expenseSeed(),
+    session: { group: 'CASA2024', user: 'Ana' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'cadastrar fixo internet 99,90');
+
+  assert.equal(resposta, [
+    'Informe o dia do mês para esse gasto fixo.',
+    '',
+    'Exemplo:',
+    'fixo internet 99,90 dia 10',
+  ].join('\n'));
+  assert.deepEqual(firebase.pushes, []);
+});
+
+test('listar fixos reads the legacy site fixed expenses path', async () => {
+  const { service } = createService({
+    seed: fixedExpenseSeed(),
+    session: { group: 'CASA2024', user: 'Ana' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'listar fixos');
+
+  assert.match(resposta, /Gastos fixos/);
+  assert.match(resposta, /1\. academia — R\$ 120,00 — Academia — dia 5/);
+  assert.match(resposta, /2\. internet — R\$ 99,90 — Moradia — dia 10/);
+});
+
+test('remover fixo unique match removes only the fixed expense', async () => {
+  const { firebase, service } = createService({
+    seed: fixedExpenseSeed(),
+    session: { group: 'CASA2024', user: 'Ana' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'apagar fixo internet');
+
+  assert.match(resposta, /Gasto fixo removido/);
+  assert.match(resposta, /internet/);
+  assert.deepEqual(firebase.removals, [
+    'grupos/CASA2024/usuarios/Ana/fixos/fixo_internet',
+  ]);
+  assert.equal(firebase.getValue('grupos/CASA2024/usuarios/Ana/fixos/fixo_internet'), undefined);
+  assert.deepEqual(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${currentMonthKey()}/gasto_internet`), {
+    cat: 'Moradia',
+    createdAt: '2026-05-20T10:00:00.000Z',
+    date: todayIso(),
+    desc: 'internet',
+    value: 99.9,
+  });
+});
+
+test('remover fixo ambiguous match lists candidates and waits for a number', async () => {
+  const seed = fixedExpenseSeed();
+  seed.grupos.CASA2024.usuarios.Ana.fixos.fixo_internet_casa = {
+    cat: 'Moradia',
+    desc: 'internet casa',
+    dia: 15,
+    value: 119.9,
+  };
+  const { firebase, getSession, service } = createStatefulService({
+    initialSession: { group: 'CASA2024', user: 'Ana' },
+    seed,
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'remover fixo internet');
+
+  assert.match(resposta, /Encontrei estes gastos fixos/);
+  assert.match(resposta, /1\. internet — R\$ 99,90 — Moradia — dia 10/);
+  assert.match(resposta, /2\. internet casa — R\$ 119,90 — Moradia — dia 15/);
+  assert.deepEqual(firebase.removals, []);
+  assert.equal(getSession().pendingDelete.type, 'fixed_expense_selection');
+  assert.deepEqual(getSession().pendingDelete.candidates.map((item) => item.id), [
+    'fixo_internet',
+    'fixo_internet_casa',
+  ]);
+});
+
+test('pending fixed expense selection removes only the selected fixed expense', async () => {
+  const { firebase, getSession, service } = createStatefulService({
+    initialSession: {
+      group: 'CASA2024',
+      user: 'Ana',
+      pendingDelete: {
+        type: 'fixed_expense_selection',
+        candidates: [
+          {
+            id: 'fixo_internet',
+            desc: 'internet',
+            value: 99.9,
+            cat: 'Moradia',
+            dia: 10,
+          },
+          {
+            id: 'fixo_academia',
+            desc: 'academia',
+            value: 120,
+            cat: 'Academia',
+            dia: 5,
+          },
+        ],
+      },
+    },
+    seed: fixedExpenseSeed(),
+  });
+  const resposta = await service.processarMensagem('5511999999999', '2');
+
+  assert.match(resposta, /Gasto fixo removido/);
+  assert.match(resposta, /academia/);
+  assert.deepEqual(getSession(), {
+    group: 'CASA2024',
+    user: 'Ana',
+  });
+  assert.deepEqual(firebase.removals, [
+    'grupos/CASA2024/usuarios/Ana/fixos/fixo_academia',
+  ]);
+  assert.equal(firebase.getValue('grupos/CASA2024/usuarios/Ana/fixos/fixo_academia'), undefined);
+  assert.equal(firebase.getValue('grupos/CASA2024/usuarios/Ana/fixos/fixo_internet').desc, 'internet');
+});
+
+test('apagar fixo command does not fall through to normal expense deletion', async () => {
+  const { firebase, service } = createService({
+    seed: fixedExpenseSeed(),
+    session: { group: 'CASA2024', user: 'Ana' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'apagar fixo telefone');
+
+  assert.equal(resposta, 'Não encontrei nenhum gasto fixo parecido. Nenhum gasto foi apagado.');
+  assert.deepEqual(firebase.removals, []);
+  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${currentMonthKey()}/gasto_internet`).desc, 'internet');
+});
+
+test('fixed expense commands require a linked session', async () => {
+  const { firebase, service } = createService({
+    seed: fixedExpenseSeed(),
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'fixo aluguel 1800 dia 10');
+
+  assert.match(resposta, /Para usar o SalvaMoney, primeiro vincule sua conta/);
+  assert.deepEqual(firebase.pushes, []);
 });
 
 test('apagar ultimo removes the latest expense in the fake Firebase tree', async () => {

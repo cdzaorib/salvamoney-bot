@@ -132,6 +132,67 @@ test('transaction store saves an optional copy by phone using the legacy push id
   });
 });
 
+test('transaction store saves fixed expenses to the legacy site path', async () => {
+  const { firebase, store } = createStore();
+  const fixedExpense = {
+    desc: 'internet',
+    value: 99.9,
+    cat: 'Moradia',
+    dia: 10,
+  };
+
+  await store.saveFixedExpense({
+    group: 'CASA2024',
+    user: 'Ana',
+    fixedExpense,
+  });
+
+  assert.deepEqual(firebase.pushes, [{
+    id: 'push_1',
+    path: 'grupos/CASA2024/usuarios/Ana/fixos',
+    value: fixedExpense,
+  }]);
+  assert.deepEqual(firebase.getValue('grupos/CASA2024/usuarios/Ana/fixos/push_1'), fixedExpense);
+});
+
+test('transaction store lists fixed expenses from the legacy site path', async () => {
+  const { store } = createStore({
+    grupos: {
+      CASA2024: {
+        usuarios: {
+          Ana: {
+            fixos: {
+              fixo_1: {
+                desc: 'internet',
+                value: 99.9,
+                cat: 'Moradia',
+                dia: 10,
+              },
+              invalid: {
+                desc: 'sem valor',
+                value: 'abc',
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  const items = await store.listFixedExpensesWithIds({
+    group: 'CASA2024',
+    user: 'Ana',
+  });
+
+  assert.deepEqual(items, [{
+    id: 'fixo_1',
+    desc: 'internet',
+    value: 99.9,
+    cat: 'Moradia',
+    dia: 10,
+  }]);
+});
+
 test('transaction store keeps the legacy save when the phone copy fails', async () => {
   const firebase = createFakeFirebase();
   const errors = [];
@@ -213,6 +274,38 @@ test('transaction store removes expenses from the legacy group user path', async
     'grupos/CASA2024/usuarios/Ana/gastos/2026_4/gasto_1',
   ]);
   assert.equal(firebase.getValue('grupos/CASA2024/usuarios/Ana/gastos/2026_4/gasto_1'), undefined);
+});
+
+test('transaction store removes fixed expenses from the legacy site path', async () => {
+  const { firebase, store } = createStore({
+    grupos: {
+      CASA2024: {
+        usuarios: {
+          Ana: {
+            fixos: {
+              fixo_1: {
+                desc: 'internet',
+                value: 99.9,
+                cat: 'Moradia',
+                dia: 10,
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  await store.removeFixedExpenseById({
+    group: 'CASA2024',
+    id: 'fixo_1',
+    user: 'Ana',
+  });
+
+  assert.deepEqual(firebase.removals, [
+    'grupos/CASA2024/usuarios/Ana/fixos/fixo_1',
+  ]);
+  assert.equal(firebase.getValue('grupos/CASA2024/usuarios/Ana/fixos/fixo_1'), undefined);
 });
 
 test('transaction store removes expenses using an explicit month key', async () => {
