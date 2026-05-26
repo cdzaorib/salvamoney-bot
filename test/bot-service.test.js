@@ -53,6 +53,14 @@ function currentMonthKey() {
   return `${parts.year}_${Number(parts.month) - 1}`;
 }
 
+function monthKeyOffset(offset) {
+  const parts = utcDateParts();
+  const date = new Date(Date.UTC(Number(parts.year), Number(parts.month) - 1 + offset, Number(parts.day)));
+  const offsetParts = utcDateParts(date);
+
+  return `${offsetParts.year}_${Number(offsetParts.month) - 1}`;
+}
+
 function todayIso() {
   const parts = utcDateParts();
 
@@ -109,6 +117,125 @@ function deleteSelectionSeed() {
       value: 20,
     },
   });
+}
+
+function installmentDeleteSeed() {
+  return {
+    grupos: {
+      CASA2024: {
+        usuarios: {
+          Ana: {
+            gastos: {
+              [monthKeyOffset(0)]: {
+                tv_1: {
+                  cat: 'Lazer',
+                  createdAt: '2026-05-20T12:00:00.000Z',
+                  date: todayIso(),
+                  desc: 'TV (1/3x)',
+                  parcelaId: 'tv-123',
+                  parcelaNum: 1,
+                  parcelaTotal: 3,
+                  value: 400,
+                },
+                tv_sala_1: {
+                  cat: 'Lazer',
+                  createdAt: '2026-05-20T11:00:00.000Z',
+                  date: todayIso(),
+                  desc: 'TV sala (1/2x)',
+                  parcelaId: 'tv-456',
+                  parcelaNum: 1,
+                  parcelaTotal: 2,
+                  value: 300,
+                },
+                tv_normal: {
+                  cat: 'Lazer',
+                  createdAt: '2026-05-20T10:00:00.000Z',
+                  date: todayIso(),
+                  desc: 'TV',
+                  value: 1200,
+                },
+              },
+              [monthKeyOffset(1)]: {
+                tv_2: {
+                  cat: 'Lazer',
+                  createdAt: '2026-05-20T12:00:00.000Z',
+                  desc: 'TV (2/3x)',
+                  parcelaId: 'tv-123',
+                  parcelaNum: 2,
+                  parcelaTotal: 3,
+                  value: 400,
+                },
+                tv_sala_2: {
+                  cat: 'Lazer',
+                  createdAt: '2026-05-20T11:00:00.000Z',
+                  desc: 'TV sala (2/2x)',
+                  parcelaId: 'tv-456',
+                  parcelaNum: 2,
+                  parcelaTotal: 2,
+                  value: 300,
+                },
+                notebook_1: {
+                  cat: 'Educação',
+                  createdAt: '2026-05-20T09:00:00.000Z',
+                  desc: 'Notebook (1/2x)',
+                  parcelaId: 'note-999',
+                  parcelaNum: 1,
+                  parcelaTotal: 2,
+                  value: 500,
+                },
+              },
+              [monthKeyOffset(2)]: {
+                tv_3: {
+                  cat: 'Lazer',
+                  createdAt: '2026-05-20T12:00:00.000Z',
+                  desc: 'TV (3/3x)',
+                  parcelaId: 'tv-123',
+                  parcelaNum: 3,
+                  parcelaTotal: 3,
+                  value: 400,
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    transactionsByUser: {
+      5511999999999: {
+        [monthKeyOffset(0)]: {
+          tv_1: {
+            desc: 'TV (1/3x)',
+            parcelaId: 'tv-123',
+            value: 400,
+          },
+          tv_sala_1: {
+            desc: 'TV sala (1/2x)',
+            parcelaId: 'tv-456',
+            value: 300,
+          },
+        },
+        [monthKeyOffset(1)]: {
+          tv_2: {
+            desc: 'TV (2/3x)',
+            parcelaId: 'tv-123',
+            value: 400,
+          },
+          tv_sala_2: {
+            desc: 'TV sala (2/2x)',
+            parcelaId: 'tv-456',
+            value: 300,
+          },
+        },
+        [monthKeyOffset(2)]: {
+          tv_3: {
+            desc: 'TV (3/3x)',
+            parcelaId: 'tv-123',
+            value: 400,
+          },
+        },
+      },
+    },
+  };
 }
 
 function createService({
@@ -1263,6 +1390,209 @@ test('apagar unknown free text does not remove anything', async () => {
   assert.equal(resposta, 'Não encontrei nenhum gasto parecido. Nenhum gasto foi apagado.');
   assert.deepEqual(firebase.removals, []);
   assert.deepEqual(savedSessions, []);
+});
+
+test('apagar parcelas da tv lists installment candidates without deleting immediately', async () => {
+  const { firebase, getSession, service } = createStatefulService({
+    initialSession: { group: 'CASA2024', user: 'Ana' },
+    seed: installmentDeleteSeed(),
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'apagar parcelas da tv');
+
+  assert.match(resposta, /Encontrei estes parcelamentos/);
+  assert.match(resposta, /1\. TV — 3 parcelas — R\$ 1\.200,00 total/);
+  assert.match(resposta, /2\. TV sala — 2 parcelas — R\$ 600,00 total/);
+  assert.doesNotMatch(resposta, /TV — R\$ 1\.200,00/);
+  assert.match(resposta, /Responda o número/);
+  assert.deepEqual(firebase.removals, []);
+  assert.deepEqual(getSession(), {
+    group: 'CASA2024',
+    user: 'Ana',
+    pendingDelete: {
+      type: 'installment_selection',
+      candidates: [
+        {
+          parcelaId: 'tv-123',
+          desc: 'TV',
+          cat: 'Lazer',
+          parcelaTotal: 3,
+          parcelasEncontradas: 3,
+          total: 1200,
+        },
+        {
+          parcelaId: 'tv-456',
+          desc: 'TV sala',
+          cat: 'Lazer',
+          parcelaTotal: 2,
+          parcelasEncontradas: 2,
+          total: 600,
+        },
+      ],
+    },
+  });
+});
+
+test('installment selection asks for final confirmation before deleting all installments', async () => {
+  const installment = {
+    parcelaId: 'tv-123',
+    desc: 'TV',
+    cat: 'Lazer',
+    parcelaTotal: 3,
+    parcelasEncontradas: 3,
+    total: 1200,
+  };
+  const { firebase, getSession, service } = createStatefulService({
+    initialSession: {
+      group: 'CASA2024',
+      user: 'Ana',
+      pendingDelete: {
+        type: 'installment_selection',
+        candidates: [installment],
+      },
+    },
+    seed: installmentDeleteSeed(),
+  });
+  const resposta = await service.processarMensagem('5511999999999', '1');
+
+  assert.equal(resposta, [
+    'Tem certeza que deseja apagar todas as 3 parcelas de TV?',
+    'Responda SIM para confirmar ou CANCELAR.',
+  ].join('\n'));
+  assert.deepEqual(firebase.removals, []);
+  assert.deepEqual(getSession(), {
+    group: 'CASA2024',
+    user: 'Ana',
+    pendingDelete: {
+      type: 'installment_confirmation',
+      installment,
+    },
+  });
+});
+
+test('installment final confirmation removes only expenses with the selected parcelaId across months', async () => {
+  const { firebase, getSession, service } = createStatefulService({
+    initialSession: {
+      group: 'CASA2024',
+      user: 'Ana',
+      pendingDelete: {
+        type: 'installment_confirmation',
+        installment: {
+          parcelaId: 'tv-123',
+          desc: 'TV',
+          cat: 'Lazer',
+          parcelaTotal: 3,
+          parcelasEncontradas: 3,
+          total: 1200,
+        },
+      },
+    },
+    seed: installmentDeleteSeed(),
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'sim');
+
+  assert.match(resposta, /Apaguei 3 parcelas do parcelamento/);
+  assert.match(resposta, /TV/);
+  assert.deepEqual(getSession(), {
+    group: 'CASA2024',
+    user: 'Ana',
+  });
+  assert.deepEqual(firebase.removals, [
+    `grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(0)}/tv_1`,
+    `transactionsByUser/5511999999999/${monthKeyOffset(0)}/tv_1`,
+    `grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(1)}/tv_2`,
+    `transactionsByUser/5511999999999/${monthKeyOffset(1)}/tv_2`,
+    `grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(2)}/tv_3`,
+    `transactionsByUser/5511999999999/${monthKeyOffset(2)}/tv_3`,
+  ]);
+  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(0)}/tv_1`), undefined);
+  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(1)}/tv_2`), undefined);
+  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(2)}/tv_3`), undefined);
+  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(0)}/tv_sala_1`).parcelaId, 'tv-456');
+  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(1)}/tv_sala_2`).parcelaId, 'tv-456');
+  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(0)}/tv_normal`).desc, 'TV');
+  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(1)}/notebook_1`).parcelaId, 'note-999');
+});
+
+test('installment final confirmation cancellation keeps all installments', async () => {
+  const { firebase, getSession, service } = createStatefulService({
+    initialSession: {
+      group: 'CASA2024',
+      user: 'Ana',
+      pendingDelete: {
+        type: 'installment_confirmation',
+        installment: {
+          parcelaId: 'tv-123',
+          desc: 'TV',
+          cat: 'Lazer',
+          parcelaTotal: 3,
+          parcelasEncontradas: 3,
+          total: 1200,
+        },
+      },
+    },
+    seed: installmentDeleteSeed(),
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'cancelar');
+
+  assert.equal(resposta, 'Exclusão cancelada. Nenhum gasto foi apagado.');
+  assert.deepEqual(getSession(), {
+    group: 'CASA2024',
+    user: 'Ana',
+  });
+  assert.deepEqual(firebase.removals, []);
+  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(0)}/tv_1`).parcelaId, 'tv-123');
+  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(1)}/tv_2`).parcelaId, 'tv-123');
+  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(2)}/tv_3`).parcelaId, 'tv-123');
+});
+
+test('new delete command clears an active expense selection before processing installment deletion', async () => {
+  const { firebase, getSession, savedSessions, service } = createStatefulService({
+    initialSession: {
+      group: 'CASA2024',
+      user: 'Ana',
+      pendingDelete: {
+        type: 'expense_selection',
+        candidates: [{
+          id: 'mercado_1',
+          monthKey: currentMonthKey(),
+          desc: 'Mercado',
+          value: 50,
+          cat: 'Alimentação',
+          date: todayIso(),
+        }],
+      },
+    },
+    seed: installmentDeleteSeed(),
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'apagar parcelas da tv');
+
+  assert.match(resposta, /Encontrei estes parcelamentos/);
+  assert.deepEqual(firebase.removals, []);
+  assert.deepEqual(savedSessions[0], {
+    phone: '5511999999999',
+    data: {
+      group: 'CASA2024',
+      user: 'Ana',
+    },
+  });
+  assert.equal(getSession().pendingDelete.type, 'installment_selection');
+  assert.deepEqual(getSession().pendingDelete.candidates.map((item) => item.parcelaId), [
+    'tv-123',
+    'tv-456',
+  ]);
+});
+
+test('apagar parcelamento without matching installments does not remove normal expenses', async () => {
+  const { firebase, savedSessions, service } = createService({
+    seed: installmentDeleteSeed(),
+    session: { group: 'CASA2024', user: 'Ana' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'apagar parcelamento geladeira');
+
+  assert.equal(resposta, 'Não encontrei nenhum parcelamento parecido. Nenhum gasto foi apagado.');
+  assert.deepEqual(firebase.removals, []);
+  assert.deepEqual(savedSessions, []);
+  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(0)}/tv_normal`).desc, 'TV');
 });
 
 test('AI delete action does not remove expenses directly', async () => {

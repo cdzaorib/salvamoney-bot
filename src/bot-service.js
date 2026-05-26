@@ -112,6 +112,14 @@ function hasExpenseSelectionPendingDelete(sessao) {
   return sessao?.pendingDelete?.type === 'expense_selection';
 }
 
+function hasPendingDelete(sessao) {
+  return Boolean(sessao?.pendingDelete?.type);
+}
+
+function isDeleteStartCommand(value) {
+  return /^(apagar|excluir|remover)\b/.test(normalizedCommand(value));
+}
+
 function sessionWithPhone(sessao, phone) {
   return {
     ...sessao,
@@ -263,7 +271,10 @@ function createBotService({
     apagarGastoPorId,
     apagarGastoSelecionado,
     apagarGastoPorTexto,
+    apagarParcelamentoSelecionado,
+    buscarParcelamentosParaApagar,
     getGastosMesComIds,
+    installmentConfirmationMessage,
     montarListaGastos,
     montarResumoFormatado,
     montarResumoHoje,
@@ -337,7 +348,7 @@ function createBotService({
   }
 
   async function processarPendingDelete(phone, msg, sessao) {
-    if (!hasExpenseSelectionPendingDelete(sessao)) {
+    if (!hasPendingDelete(sessao)) {
       return null;
     }
 
@@ -349,17 +360,52 @@ function createBotService({
 
     const command = normalizedCommand(msg);
     const option = /^\d+$/.test(command) ? Number(command) : NaN;
-    const candidates = sessao.pendingDelete.candidates || [];
+    const { pendingDelete } = sessao;
+    const candidates = pendingDelete.candidates || [];
 
-    if (!Number.isInteger(option) || option < 1 || option > candidates.length) {
-      return pendingDeleteInvalidChoiceMessage(sessao.pendingDelete);
+    if (pendingDelete.type === 'expense_selection') {
+      if (!Number.isInteger(option) || option < 1 || option > candidates.length) {
+        return pendingDeleteInvalidChoiceMessage(pendingDelete);
+      }
+
+      const resposta = await apagarGastoSelecionado(sessionWithPhone(sessao, phone), candidates[option - 1]);
+
+      await clearPendingDeleteSession(phone, sessao);
+
+      return resposta;
     }
 
-    const resposta = await apagarGastoSelecionado(sessionWithPhone(sessao, phone), candidates[option - 1]);
+    if (pendingDelete.type === 'installment_selection') {
+      if (!Number.isInteger(option) || option < 1 || option > candidates.length) {
+        return pendingDeleteInvalidChoiceMessage(pendingDelete);
+      }
 
-    await clearPendingDeleteSession(phone, sessao);
+      const installment = candidates[option - 1];
 
-    return resposta;
+      await savePendingDeleteSession(phone, sessao, {
+        type: 'installment_confirmation',
+        installment,
+      });
+
+      return installmentConfirmationMessage(installment);
+    }
+
+    if (pendingDelete.type === 'installment_confirmation') {
+      if (command !== 'sim') {
+        return 'Responda SIM para confirmar ou CANCELAR.';
+      }
+
+      const resposta = await apagarParcelamentoSelecionado(
+        sessionWithPhone(sessao, phone),
+        pendingDelete.installment
+      );
+
+      await clearPendingDeleteSession(phone, sessao);
+
+      return resposta;
+    }
+
+    return null;
   }
 
   async function processarConsultaUsuario(phone, msg) {
@@ -501,7 +547,7 @@ function createBotService({
   async function processarMensagem(phone, texto, mediaInfo = null) {
     const msg = String(texto || '').trim();
     const msgMin = msg.toLowerCase();
-    const sessao = await getSession(phone);
+    let sessao = await getSession(phone);
 
     // ── AJUDA ──
     if (isHelpCommand(msgMin)) {
@@ -570,6 +616,11 @@ function createBotService({
 
     if (isAccountLogoutCommand(msg)) {
       return await logoutAccountSession(phone, sessao);
+    }
+
+    if (hasExpenseSelectionPendingDelete(sessao) && isDeleteStartCommand(msg)) {
+      await clearPendingDeleteSession(phone, sessao);
+      sessao = clearPendingDeleteFields(sessao);
     }
 
     const respostaPendingDelete = await processarPendingDelete(phone, msg, sessao);
@@ -653,6 +704,20 @@ ${SITE_URL}`;
 
     // ── APAGAR ──
     if (isDeleteCommand(msgMin)) {
+      const respostaParcelamento = await buscarParcelamentosParaApagar(sessaoComPhone, msg, {
+        createPendingSelection: true,
+      });
+
+      if (respostaParcelamento) {
+        if (respostaParcelamento?.pendingDelete) {
+          await savePendingDeleteSession(phone, sessao, respostaParcelamento.pendingDelete);
+
+          return respostaParcelamento.message;
+        }
+
+        return respostaParcelamento;
+      }
+
       const respostaApagar = await apagarGastoPorTexto(sessaoComPhone, msg, {
         createPendingSelection: true,
       });

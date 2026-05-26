@@ -53,6 +53,102 @@ function deletedMessage(expense) {
 *${expense.desc || 'Gasto'}* — ${formatMoney(expense.value)} (${expense.cat || 'Outros'})`;
 }
 
+function parseInstallmentDeleteCommand(text) {
+  const normalized = normalizeText(text);
+
+  if (!/^(apagar|excluir|remover)\b/.test(normalized)) {
+    return null;
+  }
+
+  if (!/\b(parcelas?|parcelamento)\b/.test(normalized)) {
+    return null;
+  }
+
+  const query = normalized
+    .replace(/^(apagar|excluir|remover)\b/, '')
+    .replace(/\b(todas?|todos?|as|os|da|do|de|das|dos|parcelas?|parcelamento)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return { query };
+}
+
+function installmentBaseDescription(desc) {
+  return String(desc || 'Gasto parcelado')
+    .replace(/\s+\(\d+\/\d+x\)$/i, '')
+    .trim();
+}
+
+function installmentMatchesQuery(installment, query) {
+  const words = String(query || '')
+    .split(/\s+/)
+    .map((word) => word.trim())
+    .filter((word) => word.length >= 2);
+
+  if (!words.length) {
+    return false;
+  }
+
+  const searchable = normalizeText(`${installment.desc} ${installment.cat || ''}`);
+
+  return words.every((word) => searchable.includes(word));
+}
+
+function groupInstallmentsByParcelaId(expenses) {
+  const grouped = new Map();
+
+  expenses.forEach((expense) => {
+    if (!expense.parcelaId) {
+      return;
+    }
+
+    const group = grouped.get(expense.parcelaId) || {
+      parcelaId: expense.parcelaId,
+      desc: installmentBaseDescription(expense.desc),
+      cat: expense.cat || 'Outros',
+      total: 0,
+      parcelaTotal: Number(expense.parcelaTotal || 0),
+      installments: [],
+    };
+
+    group.installments.push(expense);
+    group.total += Number(expense.value || 0);
+    group.parcelaTotal = Math.max(group.parcelaTotal, Number(expense.parcelaTotal || 0));
+    grouped.set(expense.parcelaId, group);
+  });
+
+  return Array.from(grouped.values()).map((installment) => ({
+    ...installment,
+    parcelasEncontradas: installment.installments.length,
+    parcelaTotal: installment.parcelaTotal || installment.installments.length,
+  }));
+}
+
+function installmentSelectionLine(installment, index) {
+  return `${index + 1}. ${installment.desc} — ${installment.parcelaTotal} parcelas — ${formatMoney(installment.total)} total`;
+}
+
+function installmentSelectionMessage(candidates) {
+  const title = candidates.length === 1
+    ? 'Encontrei este parcelamento:'
+    : 'Encontrei estes parcelamentos:';
+
+  return [
+    title,
+    '',
+    ...candidates.map(installmentSelectionLine),
+    '',
+    "Responda o número para selecionar ou 'cancelar'.",
+  ].join('\n');
+}
+
+function installmentConfirmationMessage(installment) {
+  return [
+    `Tem certeza que deseja apagar todas as ${installment.parcelaTotal} parcelas de ${installment.desc}?`,
+    'Responda SIM para confirmar ou CANCELAR.',
+  ].join('\n');
+}
+
 function createExpenseService({
   dateUtils,
   db,
@@ -363,10 +459,68 @@ Se foi errado: _apagar último_`;
     };
   }
 
+  async function buscarParcelamentosParaApagar(session, text, options = {}) {
+    const command = parseInstallmentDeleteCommand(text);
+
+    if (!command) {
+      return null;
+    }
+
+    const installments = groupInstallmentsByParcelaId(
+      await transactionStore.listAllExpensesWithIds({
+        group: session.group,
+        user: session.user,
+      })
+    )
+      .filter((installment) => installmentMatchesQuery(installment, command.query))
+      .sort((a, b) => String(a.desc).localeCompare(String(b.desc)))
+      .slice(0, 5)
+      .map((installment) => ({
+        parcelaId: installment.parcelaId,
+        desc: installment.desc,
+        cat: installment.cat,
+        parcelaTotal: installment.parcelaTotal,
+        parcelasEncontradas: installment.parcelasEncontradas,
+        total: Math.round(installment.total * 100) / 100,
+      }));
+
+    if (!installments.length) {
+      return 'Não encontrei nenhum parcelamento parecido. Nenhum gasto foi apagado.';
+    }
+
+    if (!options.createPendingSelection) {
+      return installmentSelectionMessage(installments);
+    }
+
+    return {
+      message: installmentSelectionMessage(installments),
+      pendingDelete: {
+        type: 'installment_selection',
+        candidates: installments,
+      },
+    };
+  }
+
+  async function apagarParcelamentoSelecionado(session, installment) {
+    const removed = await transactionStore.removeExpensesByParcelaId({
+      group: session.group,
+      user: session.user,
+      phone: session.phone,
+      parcelaId: installment.parcelaId,
+      removePhoneCopy: true,
+    });
+
+    return `🗑️ Apaguei ${removed.length} parcelas do parcelamento:
+*${installment.desc || 'Gasto parcelado'}*`;
+  }
+
   return {
     apagarGastoPorId,
     apagarGastoSelecionado,
     apagarGastoPorTexto,
+    apagarParcelamentoSelecionado,
+    buscarParcelamentosParaApagar,
+    installmentConfirmationMessage,
     getGastosMesComIds,
     getResumoTexto,
     montarListaGastos,

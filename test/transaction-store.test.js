@@ -261,3 +261,165 @@ test('transaction store removes expenses using an explicit month key', async () 
   assert.equal(firebase.getValue('grupos/CASA2024/usuarios/Ana/gastos/2026_5/gasto_futuro'), undefined);
   assert.equal(firebase.getValue('transactionsByUser/5511999999999/2026_5/gasto_futuro'), undefined);
 });
+
+test('transaction store lists all legacy expenses with their month keys', async () => {
+  const { store } = createStore({
+    grupos: {
+      CASA2024: {
+        usuarios: {
+          Ana: {
+            gastos: {
+              '2026_4': {
+                tv_1: {
+                  desc: 'TV (1/3x)',
+                  parcelaId: 'tv-123',
+                  value: 400,
+                },
+                invalid: {
+                  desc: 'sem valor',
+                  value: 'abc',
+                },
+              },
+              '2026_5': {
+                tv_2: {
+                  desc: 'TV (2/3x)',
+                  parcelaId: 'tv-123',
+                  value: 400,
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  const items = await store.listAllExpensesWithIds({
+    group: 'CASA2024',
+    user: 'Ana',
+  });
+
+  assert.deepEqual(items, [
+    {
+      id: 'tv_1',
+      monthKey: '2026_4',
+      desc: 'TV (1/3x)',
+      parcelaId: 'tv-123',
+      value: 400,
+    },
+    {
+      id: 'tv_2',
+      monthKey: '2026_5',
+      desc: 'TV (2/3x)',
+      parcelaId: 'tv-123',
+      value: 400,
+    },
+  ]);
+});
+
+test('transaction store removes only expenses with the requested parcelaId across months', async () => {
+  const { firebase, store } = createStore({
+    grupos: {
+      CASA2024: {
+        usuarios: {
+          Ana: {
+            gastos: {
+              '2026_4': {
+                tv_1: {
+                  desc: 'TV (1/3x)',
+                  parcelaId: 'tv-123',
+                  value: 400,
+                },
+                tv_normal: {
+                  desc: 'TV',
+                  value: 1200,
+                },
+              },
+              '2026_5': {
+                tv_2: {
+                  desc: 'TV (2/3x)',
+                  parcelaId: 'tv-123',
+                  value: 400,
+                },
+                notebook_1: {
+                  desc: 'Notebook (1/2x)',
+                  parcelaId: 'note-456',
+                  value: 500,
+                },
+              },
+              '2026_6': {
+                tv_3: {
+                  desc: 'TV (3/3x)',
+                  parcelaId: 'tv-123',
+                  value: 400,
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    transactionsByUser: {
+      5511999999999: {
+        '2026_4': {
+          tv_1: {
+            desc: 'TV (1/3x)',
+            parcelaId: 'tv-123',
+            value: 400,
+          },
+        },
+        '2026_5': {
+          tv_2: {
+            desc: 'TV (2/3x)',
+            parcelaId: 'tv-123',
+            value: 400,
+          },
+        },
+        '2026_6': {
+          tv_3: {
+            desc: 'TV (3/3x)',
+            parcelaId: 'tv-123',
+            value: 400,
+          },
+        },
+      },
+    },
+  });
+
+  const removed = await store.removeExpensesByParcelaId({
+    group: 'CASA2024',
+    phone: '5511999999999',
+    parcelaId: 'tv-123',
+    user: 'Ana',
+  });
+
+  assert.deepEqual(removed.map((expense) => ({
+    id: expense.id,
+    monthKey: expense.monthKey,
+    parcelaId: expense.parcelaId,
+  })), [
+    { id: 'tv_1', monthKey: '2026_4', parcelaId: 'tv-123' },
+    { id: 'tv_2', monthKey: '2026_5', parcelaId: 'tv-123' },
+    { id: 'tv_3', monthKey: '2026_6', parcelaId: 'tv-123' },
+  ]);
+  assert.deepEqual(firebase.removals, [
+    'grupos/CASA2024/usuarios/Ana/gastos/2026_4/tv_1',
+    'transactionsByUser/5511999999999/2026_4/tv_1',
+    'grupos/CASA2024/usuarios/Ana/gastos/2026_5/tv_2',
+    'transactionsByUser/5511999999999/2026_5/tv_2',
+    'grupos/CASA2024/usuarios/Ana/gastos/2026_6/tv_3',
+    'transactionsByUser/5511999999999/2026_6/tv_3',
+  ]);
+  assert.equal(firebase.getValue('grupos/CASA2024/usuarios/Ana/gastos/2026_4/tv_1'), undefined);
+  assert.equal(firebase.getValue('grupos/CASA2024/usuarios/Ana/gastos/2026_5/tv_2'), undefined);
+  assert.equal(firebase.getValue('grupos/CASA2024/usuarios/Ana/gastos/2026_6/tv_3'), undefined);
+  assert.deepEqual(firebase.getValue('grupos/CASA2024/usuarios/Ana/gastos/2026_4/tv_normal'), {
+    desc: 'TV',
+    value: 1200,
+  });
+  assert.deepEqual(firebase.getValue('grupos/CASA2024/usuarios/Ana/gastos/2026_5/notebook_1'), {
+    desc: 'Notebook (1/2x)',
+    parcelaId: 'note-456',
+    value: 500,
+  });
+});

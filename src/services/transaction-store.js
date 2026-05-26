@@ -49,6 +49,33 @@ function createTransactionStore({
       .filter((item) => item && Number.isFinite(Number(item.value)));
   }
 
+  async function listExpenseMonths({ group, user }) {
+    const snap = await get(ref(db, `grupos/${group}/usuarios/${user}/gastos`));
+
+    return Object.keys(snap.val() || {}).sort();
+  }
+
+  async function listAllExpensesWithIds({ group, user }) {
+    const expenseMonths = await listExpenseMonths({ group, user });
+    const expenses = [];
+
+    for (const expenseMonthKey of expenseMonths) {
+      const snap = await get(ref(db, legacyMonthlyExpensesPathByMonthKey(group, user, expenseMonthKey)));
+
+      Object.entries(snap.val() || {}).forEach(([id, item]) => {
+        if (item && Number.isFinite(Number(item.value))) {
+          expenses.push({
+            id,
+            monthKey: expenseMonthKey,
+            ...item,
+          });
+        }
+      });
+    }
+
+    return expenses;
+  }
+
   async function saveExpenseByPhone({
     date,
     expense,
@@ -115,12 +142,48 @@ function createTransactionStore({
     }
   }
 
+  async function listExpensesByParcelaId({ group, user, parcelaId }) {
+    if (!parcelaId) {
+      return [];
+    }
+
+    return (await listAllExpensesWithIds({ group, user }))
+      .filter((expense) => expense.parcelaId === parcelaId);
+  }
+
+  async function removeExpensesByParcelaId({
+    group,
+    user,
+    phone,
+    parcelaId,
+    removePhoneCopy = true,
+  }) {
+    const expenses = await listExpensesByParcelaId({ group, user, parcelaId });
+
+    for (const expense of expenses) {
+      await removeExpenseById({
+        group,
+        user,
+        phone,
+        expenseMonthKey: expense.monthKey,
+        id: expense.id,
+        removePhoneCopy,
+      });
+    }
+
+    return expenses;
+  }
+
   return {
     legacyExpensePath,
     legacyMonthlyExpensesPath,
     legacyMonthlyExpensesPathByMonthKey,
+    listAllExpensesWithIds,
+    listExpenseMonths,
+    listExpensesByParcelaId,
     listMonthlyExpensesWithIds,
     removeExpenseById,
+    removeExpensesByParcelaId,
     saveExpense,
     saveExpenseByPhone,
     transactionsByUserMonthlyPath,
