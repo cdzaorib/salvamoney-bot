@@ -108,10 +108,6 @@ function hasLinkedAccountSession(sessao) {
   return Boolean(sessao?.user && sessao?.group);
 }
 
-function hasInstallmentPendingDelete(sessao) {
-  return sessao?.pendingDelete?.type === 'installment';
-}
-
 function sessionWithPhone(sessao, phone) {
   return {
     ...sessao,
@@ -134,15 +130,6 @@ function clearAccountSessionFields(sessao) {
 
   delete cleaned.user;
   delete cleaned.group;
-  delete cleaned.pendingDelete;
-
-  return Object.keys(cleaned).length > 0 ? cleaned : null;
-}
-
-function clearPendingDeleteFields(sessao) {
-  const cleaned = { ...(sessao || {}) };
-
-  delete cleaned.pendingDelete;
 
   return Object.keys(cleaned).length > 0 ? cleaned : null;
 }
@@ -262,8 +249,6 @@ function createBotService({
   const {
     apagarGastoPorId,
     apagarGastoPorTexto,
-    apagarParcelaPendente,
-    apagarParcelamentoPendente,
     getGastosMesComIds,
     montarListaGastos,
     montarResumoFormatado,
@@ -312,59 +297,6 @@ function createBotService({
       'Para entrar novamente, envie:',
       'entrar SEU_NOME SEU_GRUPO',
     ].join('\n');
-  }
-
-  async function savePendingDeleteSession(phone, sessao, pendingDelete) {
-    await saveSession(phone, {
-      ...(sessao || {}),
-      pendingDelete,
-    });
-  }
-
-  async function clearPendingDeleteSession(phone, sessao) {
-    await saveSession(phone, clearPendingDeleteFields(sessao));
-  }
-
-  function pendingDeleteInvalidChoiceMessage() {
-    return [
-      'Responda:',
-      '1 - Somente esta parcela',
-      '2 - Todas as parcelas deste parcelamento',
-      '3 - Cancelar',
-    ].join('\n');
-  }
-
-  async function processarPendingDelete(phone, msg, sessao) {
-    if (!hasInstallmentPendingDelete(sessao)) {
-      return null;
-    }
-
-    const command = normalizedCommand(msg);
-    const sessaoComPhone = sessionWithPhone(sessao, phone);
-
-    if (command === '1') {
-      const resposta = await apagarParcelaPendente(sessaoComPhone, sessao.pendingDelete);
-
-      await clearPendingDeleteSession(phone, sessao);
-
-      return resposta;
-    }
-
-    if (command === '2') {
-      const resposta = await apagarParcelamentoPendente(sessaoComPhone, sessao.pendingDelete);
-
-      await clearPendingDeleteSession(phone, sessao);
-
-      return resposta;
-    }
-
-    if (command === '3' || command === 'cancelar') {
-      await clearPendingDeleteSession(phone, sessao);
-
-      return 'Exclusão cancelada. Nenhuma parcela foi apagada.';
-    }
-
-    return pendingDeleteInvalidChoiceMessage();
   }
 
   async function processarConsultaUsuario(phone, msg) {
@@ -577,12 +509,6 @@ function createBotService({
       return await logoutAccountSession(phone, sessao);
     }
 
-    const respostaPendingDelete = await processarPendingDelete(phone, msg, sessao);
-
-    if (respostaPendingDelete) {
-      return respostaPendingDelete;
-    }
-
     const respostaConsultaUsuario = await processarConsultaUsuario(phone, msg);
 
     if (respostaConsultaUsuario) {
@@ -658,17 +584,7 @@ ${SITE_URL}`;
 
     // ── APAGAR ──
     if (isDeleteCommand(msgMin)) {
-      const respostaApagar = await apagarGastoPorTexto(sessaoComPhone, msg, {
-        confirmInstallment: true,
-      });
-
-      if (respostaApagar?.pendingDelete) {
-        await savePendingDeleteSession(phone, sessao, respostaApagar.pendingDelete);
-
-        return respostaApagar.message;
-      }
-
-      return respostaApagar;
+      return await apagarGastoPorTexto(sessaoComPhone, msg);
     }
 
     // ── PARCELAMENTO ──
