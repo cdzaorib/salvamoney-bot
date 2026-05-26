@@ -8,7 +8,7 @@ Bot que registra gastos via WhatsApp e salva direto no Firebase.
 - Parcelamento com lançamentos nos meses seguintes
 - Resumo mensal, resumo do dia e listagem dos últimos gastos
 - Dashboard simples para consultar e apagar gastos
-- Suporte a Z-API e Evolution API
+- Suporte à Evolution API
 
 ## 🚀 Deploy no Railway (grátis)
 
@@ -28,11 +28,11 @@ Use `.env.example` como base. Mantenha tokens reais fora do repositório.
 O Railway vai gerar uma URL tipo:
 `https://salvamoney-bot-production.up.railway.app`
 
-### 5. Configure o Webhook no Z-API
-No painel do Z-API:
+### 5. Configure o Webhook na Evolution API
+No painel da Evolution API:
 - Vá em **Webhooks**
 - Cole a URL: `https://SUA-URL.railway.app/webhook`
-- Ative os eventos: **ReceivedCallback**
+- Ative o evento de mensagens: **messages.upsert**
 
 ---
 
@@ -102,7 +102,7 @@ firebase database:rules:set database.rules.json --project SEU_PROJECT_ID
 | `src/bot/date-utils.js` | Datas do bot, chave mensal do Firebase e nomes dos meses |
 | `src/bot/expense-service.js` | Resumos, lançamento, parcelamento e exclusão de gastos |
 | `src/bot/text-utils.js` | Normalização de texto e limpeza de chaves |
-| `src/providers/whatsapp.js` | Envio por Z-API ou Evolution |
+| `src/providers/whatsapp.js` | Envio por Evolution API |
 | `src/providers/groq.js` | Chat, transcrição, leitura de imagem e download de mídia |
 | `src/webhook-parser.js` | Leitura dos payloads recebidos no webhook |
 | `src/session-store.js` | Sessões do WhatsApp com cache e Firebase |

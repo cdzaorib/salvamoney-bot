@@ -87,7 +87,6 @@ function createWebhookHarness() {
       groqApiKey: '',
       siteUrl: 'https://site.example/',
       webhookToken: '',
-      whatsappProvider: 'evolution',
     },
     messageDedupe: {
       isDuplicateMessage: () => false,
@@ -103,7 +102,7 @@ function createWebhookHarness() {
     sessionStore: {
       getSession: async () => null,
     },
-    webhookParser: createWebhookParser('evolution'),
+    webhookParser: createWebhookParser(),
   });
 
   return {

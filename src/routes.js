@@ -60,13 +60,6 @@ function registerRoutes({
         return;
       }
 
-      // Esse filtro é somente para Z-API.
-      // Se deixar ativo para Evolution, alguns payloads podem ser ignorados.
-      if (config.whatsappProvider !== 'evolution' && body.type && body.type !== 'ReceivedCallback') {
-        console.log('ℹ️ Tipo Z-API ignorado:', body.type);
-        return;
-      }
-
       const phone = getPhoneFromWebhook(body);
       const texto = getTextFromWebhook(body);
       const messageId = getMessageId(body);
@@ -250,7 +243,7 @@ function registerRoutes({
     status: 'ok',
     bot: 'SalvaMoney',
     version: '5.5.0',
-    provider: config.whatsappProvider,
+    provider: 'evolution',
     site: config.siteUrl,
     features: {
       text: true,

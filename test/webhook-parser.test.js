@@ -4,8 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createWebhookParser } = require('../src/webhook-parser');
 
-const evolution = createWebhookParser('evolution');
-const zapi = createWebhookParser('zapi');
+const evolution = createWebhookParser();
 
 function evolutionText(event = 'messages.upsert') {
   return {
@@ -35,16 +34,6 @@ test('Evolution MESSAGES_UPSERT payload keeps the accepted event behavior', () =
 
   assert.equal(evolution.isSupportedMessageEvent(payload), true);
   assert.equal(evolution.getTextFromWebhook(payload), 'almoco 35');
-});
-
-test('normal Z-API text payload extracts body and phone', () => {
-  const payload = {
-    body: 'oi',
-    phone: '5511912345678',
-  };
-
-  assert.equal(zapi.getTextFromWebhook(payload), 'oi');
-  assert.equal(zapi.getPhoneFromWebhook(payload), '5511912345678');
 });
 
 test('audio payload extracts media info', () => {
@@ -138,12 +127,4 @@ test('Evolution group phone uses key.participant for the sender candidate', () =
 
   assert.equal(evolution.getPhoneCandidatesFromWebhook(payload).keyParticipant, '5511977777777');
   assert.equal(evolution.getPhoneFromWebhook(payload), '5511977777777');
-});
-
-test('Z-API phone extraction supports sender and phone fields', () => {
-  assert.equal(zapi.getPhoneFromWebhook({ sender: '5511966666666' }), '5511966666666');
-  assert.equal(zapi.getPhoneFromWebhook({
-    phone: '5511955555555',
-    sender: '5511966666666',
-  }), '5511955555555');
 });

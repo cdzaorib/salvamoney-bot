@@ -32,7 +32,7 @@ const botService = createBotService({
 });
 const messageDedupe = createMessageDedupe();
 const sendMessage = createSendMessage(config, safeLog);
-const webhookParser = createWebhookParser(config.whatsappProvider);
+const webhookParser = createWebhookParser();
 
 registerRoutes({
   app,
@@ -58,7 +58,7 @@ process.on('SIGINT', () => {
 
 // ─── START ────────────────────────────────────────────────
 app.listen(config.port, () => {
-  console.log(`🚀 SalvaMoney v5.5 · porta ${config.port} · provider: ${config.whatsappProvider}`);
+  console.log(`🚀 SalvaMoney v5.5 · porta ${config.port} · provider: evolution`);
   console.log(`🌐 Site: ${config.siteUrl}`);
 
   if (config.groqApiKey) {

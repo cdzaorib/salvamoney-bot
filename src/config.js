@@ -2,7 +2,6 @@
 
 const config = {
   jsonLimit: process.env.JSON_LIMIT || '25mb',
-  whatsappProvider: process.env.WHATSAPP_PROVIDER || 'zapi',
   siteUrl: process.env.SITE_URL || 'https://cdzaorib.github.io/Salvamoney2.0/',
   webhookToken: String(process.env.WEBHOOK_TOKEN || ''),
   dashboardToken: String(process.env.DASHBOARD_TOKEN || ''),
@@ -13,10 +12,6 @@ const config = {
   groqModel: process.env.GROQ_MODEL || 'llama-3.1-8b-instant',
   groqVisionModel: process.env.GROQ_VISION_MODEL || 'meta-llama/llama-4-scout-17b-16e-instruct',
   groqAudioModel: process.env.GROQ_AUDIO_MODEL || 'whisper-large-v3-turbo',
-  zapiClientToken: process.env.ZAPI_CLIENT_TOKEN,
-  zapiUrl: process.env.ZAPI_INSTANCE && process.env.ZAPI_TOKEN
-    ? `https://api.z-api.io/instances/${process.env.ZAPI_INSTANCE}/token/${process.env.ZAPI_TOKEN}`
-    : null,
   evolutionApiUrl: process.env.EVOLUTION_API_URL,
   evolutionApiKey: process.env.EVOLUTION_API_KEY,
   evolutionInstance: process.env.EVOLUTION_INSTANCE || 'salvamoney',
@@ -36,13 +31,10 @@ const config = {
 function validateEnv() {
   const requiredEnv = [
     'FIREBASE_DB_URL',
+    'EVOLUTION_API_URL',
+    'EVOLUTION_API_KEY',
+    'EVOLUTION_INSTANCE',
   ];
-
-  if (config.whatsappProvider === 'evolution') {
-    requiredEnv.push('EVOLUTION_API_URL', 'EVOLUTION_API_KEY', 'EVOLUTION_INSTANCE');
-  } else {
-    requiredEnv.push('ZAPI_INSTANCE', 'ZAPI_TOKEN');
-  }
 
   const missingEnv = requiredEnv.filter((key) => !process.env[key]);
 
@@ -64,10 +56,6 @@ function validateEnv() {
       'FIREBASE_PROJECT_ID + FIREBASE_CLIENT_EMAIL + FIREBASE_PRIVATE_KEY.'
     );
     process.exit(1);
-  }
-
-  if (config.whatsappProvider !== 'evolution' && !config.zapiClientToken) {
-    console.warn('⚠️ ZAPI_CLIENT_TOKEN não configurado. A Z-API pode recusar envios.');
   }
 
   if (!config.groqApiKey) {

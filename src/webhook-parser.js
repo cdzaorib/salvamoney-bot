@@ -1,6 +1,6 @@
 'use strict';
 
-function createWebhookParser(whatsappProvider) {
+function createWebhookParser() {
   function isSupportedMessageEvent(body) {
     // A Evolution pode enviar o evento como:
     // messages.upsert, MESSAGES_UPSERT, messages_upsert ou messages-upsert.
@@ -14,12 +14,6 @@ function createWebhookParser(whatsappProvider) {
   }
 
   function getTextFromWebhook(body) {
-    const z = body?.text?.message || body?.body || body?.message?.text;
-
-    if (z) {
-      return z;
-    }
-
     const msg = getEvolutionMsg(body);
 
     return (
@@ -34,7 +28,6 @@ function createWebhookParser(whatsappProvider) {
   function cleanPhoneNumber(value) {
     return String(value || '')
       .replace('@s.whatsapp.net', '')
-      .replace('@c.us', '')
       .replace('@lid', '')
       .replace(/\D/g, '');
   }
@@ -50,9 +43,6 @@ function createWebhookParser(whatsappProvider) {
       dataSender: cleanPhoneNumber(data?.sender),
       bodyRemoteJid: cleanPhoneNumber(body?.remoteJid),
       bodySender: cleanPhoneNumber(body?.sender),
-      bodyPhone: cleanPhoneNumber(body?.phone),
-      bodyFrom: cleanPhoneNumber(body?.from),
-      bodyNumber: cleanPhoneNumber(body?.number),
     };
   }
 
@@ -65,24 +55,18 @@ function createWebhookParser(whatsappProvider) {
     // Em mensagem direta recebida, key.remoteJid costuma ser o número de quem enviou.
     // Alguns payloads também trazem body.sender/body.phone como o número da instância,
     // então NÃO devemos priorizar esses campos no Evolution.
-    if (whatsappProvider === 'evolution') {
-      if (String(key?.remoteJid || '').includes('@g.us')) {
-        return candidates.keyParticipant || candidates.dataSender || candidates.bodySender || '';
-      }
-
-      return (
-        candidates.keyRemoteJid ||
-        candidates.dataRemoteJid ||
-        candidates.dataSender ||
-        candidates.bodyRemoteJid ||
-        candidates.bodySender ||
-        candidates.bodyPhone ||
-        ''
-      );
+    if (String(key?.remoteJid || '').includes('@g.us')) {
+      return candidates.keyParticipant || candidates.dataSender || candidates.bodySender || '';
     }
 
-    // Z-API antigo
-    return candidates.bodyPhone || candidates.bodySender || candidates.bodyFrom || candidates.bodyNumber || '';
+    return (
+      candidates.keyRemoteJid ||
+      candidates.dataRemoteJid ||
+      candidates.dataSender ||
+      candidates.bodyRemoteJid ||
+      candidates.bodySender ||
+      ''
+    );
   }
 
   function isFromMeWebhook(body) {
@@ -100,7 +84,7 @@ function createWebhookParser(whatsappProvider) {
   }
 
   function getMessageId(body) {
-    return body?.messageId || body?.zaapId || body?.id || body?.data?.key?.id || body?.key?.id;
+    return body?.messageId || body?.id || body?.data?.key?.id || body?.key?.id;
   }
 
   function getMediaInfo(body) {
