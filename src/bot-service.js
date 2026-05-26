@@ -108,6 +108,10 @@ function hasLinkedAccountSession(sessao) {
   return Boolean(sessao?.user && sessao?.group);
 }
 
+function hasExpenseSelectionPendingDelete(sessao) {
+  return sessao?.pendingDelete?.type === 'expense_selection';
+}
+
 function sessionWithPhone(sessao, phone) {
   return {
     ...sessao,
@@ -130,6 +134,15 @@ function clearAccountSessionFields(sessao) {
 
   delete cleaned.user;
   delete cleaned.group;
+  delete cleaned.pendingDelete;
+
+  return Object.keys(cleaned).length > 0 ? cleaned : null;
+}
+
+function clearPendingDeleteFields(sessao) {
+  const cleaned = { ...(sessao || {}) };
+
+  delete cleaned.pendingDelete;
 
   return Object.keys(cleaned).length > 0 ? cleaned : null;
 }
@@ -248,6 +261,7 @@ function createBotService({
   });
   const {
     apagarGastoPorId,
+    apagarGastoSelecionado,
     apagarGastoPorTexto,
     getGastosMesComIds,
     montarListaGastos,
@@ -297,6 +311,55 @@ function createBotService({
       'Para entrar novamente, envie:',
       'entrar SEU_NOME SEU_GRUPO',
     ].join('\n');
+  }
+
+  async function savePendingDeleteSession(phone, sessao, pendingDelete) {
+    await saveSession(phone, {
+      ...(sessao || {}),
+      pendingDelete,
+    });
+  }
+
+  async function clearPendingDeleteSession(phone, sessao) {
+    await saveSession(phone, clearPendingDeleteFields(sessao));
+  }
+
+  function pendingDeleteInvalidChoiceMessage(pendingDelete) {
+    const count = pendingDelete?.candidates?.length || 0;
+
+    return count > 0
+      ? `Responda com um número de 1 a ${count} ou "cancelar".`
+      : 'Responda com o número do gasto que deseja apagar ou "cancelar".';
+  }
+
+  function isPendingDeleteCancelCommand(value) {
+    return ['cancela', 'cancelar'].includes(normalizedCommand(value));
+  }
+
+  async function processarPendingDelete(phone, msg, sessao) {
+    if (!hasExpenseSelectionPendingDelete(sessao)) {
+      return null;
+    }
+
+    if (isPendingDeleteCancelCommand(msg)) {
+      await clearPendingDeleteSession(phone, sessao);
+
+      return 'Exclusão cancelada. Nenhum gasto foi apagado.';
+    }
+
+    const command = normalizedCommand(msg);
+    const option = /^\d+$/.test(command) ? Number(command) : NaN;
+    const candidates = sessao.pendingDelete.candidates || [];
+
+    if (!Number.isInteger(option) || option < 1 || option > candidates.length) {
+      return pendingDeleteInvalidChoiceMessage(sessao.pendingDelete);
+    }
+
+    const resposta = await apagarGastoSelecionado(sessionWithPhone(sessao, phone), candidates[option - 1]);
+
+    await clearPendingDeleteSession(phone, sessao);
+
+    return resposta;
   }
 
   async function processarConsultaUsuario(phone, msg) {
@@ -509,6 +572,12 @@ function createBotService({
       return await logoutAccountSession(phone, sessao);
     }
 
+    const respostaPendingDelete = await processarPendingDelete(phone, msg, sessao);
+
+    if (respostaPendingDelete) {
+      return respostaPendingDelete;
+    }
+
     const respostaConsultaUsuario = await processarConsultaUsuario(phone, msg);
 
     if (respostaConsultaUsuario) {
@@ -584,7 +653,17 @@ ${SITE_URL}`;
 
     // ── APAGAR ──
     if (isDeleteCommand(msgMin)) {
-      return await apagarGastoPorTexto(sessaoComPhone, msg);
+      const respostaApagar = await apagarGastoPorTexto(sessaoComPhone, msg, {
+        createPendingSelection: true,
+      });
+
+      if (respostaApagar?.pendingDelete) {
+        await savePendingDeleteSession(phone, sessao, respostaApagar.pendingDelete);
+
+        return respostaApagar.message;
+      }
+
+      return respostaApagar;
     }
 
     // ── PARCELAMENTO ──

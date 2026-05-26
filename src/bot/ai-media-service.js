@@ -86,7 +86,10 @@ Nunca invente valores. Se não informou valor ao registrar, pergunte.`;
       }
 
       if (json.acao === 'apagar') {
-        return await apagarGastoPorTexto(sessao, json.texto || texto);
+        return [
+          'Para apagar com segurança, envie o comando começando com _apagar_.',
+          'Eu vou listar os gastos parecidos para você confirmar antes de excluir.',
+        ].join('\n');
       }
 
       if (json.acao === 'parcelar') {

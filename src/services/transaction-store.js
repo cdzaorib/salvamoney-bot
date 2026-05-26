@@ -17,12 +17,28 @@ function createTransactionStore({
     return `grupos/${group}/usuarios/${user}/gastos/${monthKey(date)}`;
   }
 
+  function legacyMonthlyExpensesPathByMonthKey(group, user, expenseMonthKey) {
+    return `grupos/${group}/usuarios/${user}/gastos/${expenseMonthKey}`;
+  }
+
   function transactionsByUserMonthlyPath(phone, date) {
     return `transactionsByUser/${normalizePhone(phone)}/${monthKey(date)}`;
   }
 
-  function legacyExpensePath(group, user, date, id) {
-    return `${legacyMonthlyExpensesPath(group, user, date)}/${id}`;
+  function transactionsByUserMonthlyPathByMonthKey(phone, expenseMonthKey) {
+    return `transactionsByUser/${normalizePhone(phone)}/${expenseMonthKey}`;
+  }
+
+  function resolveExpenseMonthKey(date, expenseMonthKey) {
+    return expenseMonthKey || monthKey(date);
+  }
+
+  function legacyExpensePath(group, user, date, id, expenseMonthKey) {
+    return `${legacyMonthlyExpensesPathByMonthKey(
+      group,
+      user,
+      resolveExpenseMonthKey(date, expenseMonthKey)
+    )}/${id}`;
   }
 
   async function listMonthlyExpensesWithIds({ group, user, date }) {
@@ -81,18 +97,34 @@ function createTransactionStore({
     return legacyResult;
   }
 
-  async function removeExpenseById({ group, user, date, id }) {
-    await remove(ref(db, legacyExpensePath(group, user, date, id)));
+  async function removeExpenseById({
+    group,
+    user,
+    phone,
+    date,
+    expenseMonthKey,
+    id,
+    removePhoneCopy = false,
+  }) {
+    const resolvedMonthKey = resolveExpenseMonthKey(date, expenseMonthKey);
+
+    await remove(ref(db, legacyExpensePath(group, user, date, id, resolvedMonthKey)));
+
+    if (removePhoneCopy && normalizePhone(phone)) {
+      await remove(ref(db, `${transactionsByUserMonthlyPathByMonthKey(phone, resolvedMonthKey)}/${id}`));
+    }
   }
 
   return {
     legacyExpensePath,
     legacyMonthlyExpensesPath,
+    legacyMonthlyExpensesPathByMonthKey,
     listMonthlyExpensesWithIds,
     removeExpenseById,
     saveExpense,
     saveExpenseByPhone,
     transactionsByUserMonthlyPath,
+    transactionsByUserMonthlyPathByMonthKey,
   };
 }
 

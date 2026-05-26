@@ -214,3 +214,50 @@ test('transaction store removes expenses from the legacy group user path', async
   ]);
   assert.equal(firebase.getValue('grupos/CASA2024/usuarios/Ana/gastos/2026_4/gasto_1'), undefined);
 });
+
+test('transaction store removes expenses using an explicit month key', async () => {
+  const { firebase, store } = createStore({
+    grupos: {
+      CASA2024: {
+        usuarios: {
+          Ana: {
+            gastos: {
+              '2026_5': {
+                gasto_futuro: {
+                  desc: 'TV (2/3x)',
+                  value: 400,
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    transactionsByUser: {
+      5511999999999: {
+        '2026_5': {
+          gasto_futuro: {
+            desc: 'TV (2/3x)',
+            value: 400,
+          },
+        },
+      },
+    },
+  });
+
+  await store.removeExpenseById({
+    group: 'CASA2024',
+    id: 'gasto_futuro',
+    expenseMonthKey: '2026_5',
+    phone: '5511999999999',
+    removePhoneCopy: true,
+    user: 'Ana',
+  });
+
+  assert.deepEqual(firebase.removals, [
+    'grupos/CASA2024/usuarios/Ana/gastos/2026_5/gasto_futuro',
+    'transactionsByUser/5511999999999/2026_5/gasto_futuro',
+  ]);
+  assert.equal(firebase.getValue('grupos/CASA2024/usuarios/Ana/gastos/2026_5/gasto_futuro'), undefined);
+  assert.equal(firebase.getValue('transactionsByUser/5511999999999/2026_5/gasto_futuro'), undefined);
+});

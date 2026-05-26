@@ -13,6 +13,46 @@ function formatMoney(value) {
   })}`;
 }
 
+function candidateLine(expense, index) {
+  return `${index + 1}. ${expense.desc || 'Gasto'} — ${formatMoney(expense.value)} — ${expense.cat || 'Outros'} — ${expense.date || ''}`;
+}
+
+function selectionMessage(candidates) {
+  return [
+    'Encontrei estes gastos parecidos:',
+    '',
+    ...candidates.map(candidateLine),
+    '',
+    "Responda com o número do gasto que deseja apagar ou 'cancelar'.",
+  ].join('\n');
+}
+
+function pendingCandidate(expense, expenseMonthKey) {
+  return {
+    id: expense.id,
+    monthKey: expenseMonthKey,
+    desc: expense.desc || 'Gasto',
+    value: Number(expense.value || 0),
+    cat: expense.cat || 'Outros',
+    date: expense.date || '',
+    ...(expense.parcelaId ? { parcelaId: expense.parcelaId } : {}),
+  };
+}
+
+function deletedMessage(expense) {
+  if (expense.parcelaId) {
+    return [
+      '🗑️ Apaguei somente esta parcela:',
+      `*${expense.desc || 'Gasto'}* — ${formatMoney(expense.value)} (${expense.cat || 'Outros'})`,
+      '',
+      'Para apagar todas as parcelas do parcelamento, essa função será implementada em uma próxima etapa.',
+    ].join('\n');
+  }
+
+  return `🗑️ Apaguei:
+*${expense.desc || 'Gasto'}* — ${formatMoney(expense.value)} (${expense.cat || 'Outros'})`;
+}
+
 function createExpenseService({
   dateUtils,
   db,
@@ -247,7 +287,20 @@ Se foi errado: _apagar último_`;
     });
   }
 
-  async function apagarGastoPorTexto(session, text) {
+  async function apagarGastoSelecionado(session, expense) {
+    await transactionStore.removeExpenseById({
+      group: session.group,
+      user: session.user,
+      phone: session.phone,
+      expenseMonthKey: expense.monthKey,
+      id: expense.id,
+      removePhoneCopy: true,
+    });
+
+    return deletedMessage(expense);
+  }
+
+  async function apagarGastoPorTexto(session, text, options = {}) {
     const items = await getGastosMesComIds(session.group, session.user);
 
     if (!items.length) {
@@ -263,8 +316,7 @@ Se foi errado: _apagar último_`;
 
       await apagarGastoPorId(session, latest.id);
 
-      return `🗑️ Apaguei:
-*${latest.desc || 'Gasto'}* — ${formatMoney(latest.value)} (${latest.cat || 'Outros'})`;
+      return deletedMessage(latest);
     }
 
     let candidates = [...items];
@@ -289,25 +341,31 @@ Se foi errado: _apagar último_`;
     }
 
     if (!candidates.length) {
-      return `Não achei esse gasto.
-Tente:
-_apagar último_
-_apagar 35_
-_apagar mercado_`;
+      return 'Não encontrei nenhum gasto parecido. Nenhum gasto foi apagado.';
     }
 
-    const chosen = candidates.sort((a, b) =>
-      String(b.createdAt || '').localeCompare(String(a.createdAt || ''))
-    )[0];
+    const currentMonthKey = monthKey();
+    const selectedCandidates = candidates
+      .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))
+      .slice(0, 5)
+      .map((expense) => pendingCandidate(expense, currentMonthKey));
 
-    await apagarGastoPorId(session, chosen.id);
+    if (!options.createPendingSelection) {
+      return selectionMessage(selectedCandidates);
+    }
 
-    return `🗑️ Apaguei:
-*${chosen.desc || 'Gasto'}* — ${formatMoney(chosen.value)} (${chosen.cat || 'Outros'})`;
+    return {
+      message: selectionMessage(selectedCandidates),
+      pendingDelete: {
+        type: 'expense_selection',
+        candidates: selectedCandidates,
+      },
+    };
   }
 
   return {
     apagarGastoPorId,
+    apagarGastoSelecionado,
     apagarGastoPorTexto,
     getGastosMesComIds,
     getResumoTexto,

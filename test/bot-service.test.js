@@ -75,6 +75,42 @@ function expenseSeed(expenses = {}) {
   };
 }
 
+function deleteSelectionSeed() {
+  return expenseSeed({
+    mercado_1: {
+      cat: 'Alimentação',
+      createdAt: '2026-05-20T10:00:00.000Z',
+      date: todayIso(),
+      desc: 'Mercado',
+      value: 50,
+    },
+    mercado_2: {
+      cat: 'Alimentação',
+      createdAt: '2026-05-20T11:00:00.000Z',
+      date: todayIso(),
+      desc: 'Mercado extra',
+      value: 75,
+    },
+    tv_1: {
+      cat: 'Lazer',
+      createdAt: '2026-05-20T12:00:00.000Z',
+      date: todayIso(),
+      desc: 'TV (1/3x)',
+      parcelaId: 'tv-123',
+      parcelaNum: 1,
+      parcelaTotal: 3,
+      value: 400,
+    },
+    uber_1: {
+      cat: 'Transporte',
+      createdAt: '2026-05-20T09:00:00.000Z',
+      date: todayIso(),
+      desc: 'Uber',
+      value: 20,
+    },
+  });
+}
+
 function createService({
   configOverrides = {},
   groqOverrides = {},
@@ -1037,6 +1073,216 @@ test('apagar ultimo removes the latest expense in the fake Firebase tree', async
     desc: 'uber',
     value: 20,
   });
+});
+
+test('apagar mercado lists matching candidates and does not delete immediately', async () => {
+  const { firebase, getSession, service } = createStatefulService({
+    initialSession: { group: 'CASA2024', user: 'Ana' },
+    seed: deleteSelectionSeed(),
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'apagar mercado');
+
+  assert.match(resposta, /Encontrei estes gastos parecidos/);
+  assert.match(resposta, /1\. Mercado extra — R\$ 75,00 — Alimentação/);
+  assert.match(resposta, /2\. Mercado — R\$ 50,00 — Alimentação/);
+  assert.match(resposta, /Responda com o número/);
+  assert.deepEqual(firebase.removals, []);
+  assert.deepEqual(getSession(), {
+    group: 'CASA2024',
+    user: 'Ana',
+    pendingDelete: {
+      type: 'expense_selection',
+      candidates: [
+        {
+          id: 'mercado_2',
+          monthKey: currentMonthKey(),
+          desc: 'Mercado extra',
+          value: 75,
+          cat: 'Alimentação',
+          date: todayIso(),
+        },
+        {
+          id: 'mercado_1',
+          monthKey: currentMonthKey(),
+          desc: 'Mercado',
+          value: 50,
+          cat: 'Alimentação',
+          date: todayIso(),
+        },
+      ],
+    },
+  });
+});
+
+test('pending delete numeric response removes only the selected normal expense', async () => {
+  const { firebase, getSession, service } = createStatefulService({
+    initialSession: {
+      group: 'CASA2024',
+      user: 'Ana',
+      pendingDelete: {
+        type: 'expense_selection',
+        candidates: [
+          {
+            id: 'mercado_2',
+            monthKey: currentMonthKey(),
+            desc: 'Mercado extra',
+            value: 75,
+            cat: 'Alimentação',
+            date: todayIso(),
+          },
+          {
+            id: 'mercado_1',
+            monthKey: currentMonthKey(),
+            desc: 'Mercado',
+            value: 50,
+            cat: 'Alimentação',
+            date: todayIso(),
+          },
+        ],
+      },
+    },
+    seed: deleteSelectionSeed(),
+  });
+  const resposta = await service.processarMensagem('5511999999999', '1');
+
+  assert.match(resposta, /Apaguei/);
+  assert.match(resposta, /Mercado extra/);
+  assert.deepEqual(getSession(), {
+    group: 'CASA2024',
+    user: 'Ana',
+  });
+  assert.deepEqual(firebase.removals, [
+    `grupos/CASA2024/usuarios/Ana/gastos/${currentMonthKey()}/mercado_2`,
+    `transactionsByUser/5511999999999/${currentMonthKey()}/mercado_2`,
+  ]);
+  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${currentMonthKey()}/mercado_2`), undefined);
+  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${currentMonthKey()}/mercado_1`).desc, 'Mercado');
+  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${currentMonthKey()}/uber_1`).desc, 'Uber');
+});
+
+test('pending delete cancellation clears state without removing expenses', async () => {
+  const { firebase, getSession, service } = createStatefulService({
+    initialSession: {
+      group: 'CASA2024',
+      user: 'Ana',
+      pendingDelete: {
+        type: 'expense_selection',
+        candidates: [{
+          id: 'mercado_1',
+          monthKey: currentMonthKey(),
+          desc: 'Mercado',
+          value: 50,
+          cat: 'Alimentação',
+          date: todayIso(),
+        }],
+      },
+    },
+    seed: deleteSelectionSeed(),
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'cancelar');
+
+  assert.equal(resposta, 'Exclusão cancelada. Nenhum gasto foi apagado.');
+  assert.deepEqual(getSession(), {
+    group: 'CASA2024',
+    user: 'Ana',
+  });
+  assert.deepEqual(firebase.removals, []);
+});
+
+test('invalid pending delete response keeps the pending selection active', async () => {
+  const pendingDelete = {
+    type: 'expense_selection',
+    candidates: [{
+      id: 'mercado_1',
+      monthKey: currentMonthKey(),
+      desc: 'Mercado',
+      value: 50,
+      cat: 'Alimentação',
+      date: todayIso(),
+    }],
+  };
+  const { firebase, getSession, savedSessions, service } = createStatefulService({
+    initialSession: {
+      group: 'CASA2024',
+      user: 'Ana',
+      pendingDelete,
+    },
+    seed: deleteSelectionSeed(),
+  });
+  const resposta = await service.processarMensagem('5511999999999', '9');
+
+  assert.equal(resposta, 'Responda com um número de 1 a 1 ou "cancelar".');
+  assert.deepEqual(getSession().pendingDelete, pendingDelete);
+  assert.deepEqual(savedSessions, []);
+  assert.deepEqual(firebase.removals, []);
+});
+
+test('selected installment candidate deletes only that installment', async () => {
+  const { firebase, getSession, service } = createStatefulService({
+    initialSession: {
+      group: 'CASA2024',
+      user: 'Ana',
+      pendingDelete: {
+        type: 'expense_selection',
+        candidates: [{
+          id: 'tv_1',
+          monthKey: currentMonthKey(),
+          desc: 'TV (1/3x)',
+          value: 400,
+          cat: 'Lazer',
+          date: todayIso(),
+          parcelaId: 'tv-123',
+        }],
+      },
+    },
+    seed: deleteSelectionSeed(),
+  });
+  const resposta = await service.processarMensagem('5511999999999', '1');
+
+  assert.match(resposta, /Apaguei somente esta parcela/);
+  assert.match(resposta, /próxima etapa|proxima etapa/);
+  assert.deepEqual(getSession(), {
+    group: 'CASA2024',
+    user: 'Ana',
+  });
+  assert.deepEqual(firebase.removals, [
+    `grupos/CASA2024/usuarios/Ana/gastos/${currentMonthKey()}/tv_1`,
+    `transactionsByUser/5511999999999/${currentMonthKey()}/tv_1`,
+  ]);
+  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${currentMonthKey()}/tv_1`), undefined);
+  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${currentMonthKey()}/uber_1`).desc, 'Uber');
+});
+
+test('apagar unknown free text does not remove anything', async () => {
+  const { firebase, savedSessions, service } = createService({
+    seed: deleteSelectionSeed(),
+    session: { group: 'CASA2024', user: 'Ana' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'apagar farmacia');
+
+  assert.equal(resposta, 'Não encontrei nenhum gasto parecido. Nenhum gasto foi apagado.');
+  assert.deepEqual(firebase.removals, []);
+  assert.deepEqual(savedSessions, []);
+});
+
+test('AI delete action does not remove expenses directly', async () => {
+  const { firebase, service } = createService({
+    configOverrides: {
+      groqApiKey: 'fake-groq-key',
+    },
+    groqOverrides: {
+      chamarIA: async () => JSON.stringify({
+        acao: 'apagar',
+        texto: 'apagar mercado',
+      }),
+    },
+    seed: deleteSelectionSeed(),
+    session: { group: 'CASA2024', user: 'Ana' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'desfaz aquele gasto do mercado');
+
+  assert.match(resposta, /Para apagar com segurança/);
+  assert.deepEqual(firebase.removals, []);
 });
 
 test('parcelamento writes one installment per month to the fake Firebase tree', async () => {
