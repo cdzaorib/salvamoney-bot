@@ -1,6 +1,12 @@
 'use strict';
 
 const axios = require('axios');
+const { File } = require('node:buffer');
+
+if (!globalThis.File) {
+  globalThis.File = File;
+}
+
 const Groq = require('groq-sdk');
 
 function createGroqClient(config) {
