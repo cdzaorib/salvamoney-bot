@@ -13,12 +13,117 @@ const { createAiMediaService } = require('./bot/ai-media-service');
 const { detectarCategoria } = require('./bot/categories');
 const { MESES, createDateUtils } = require('./bot/date-utils');
 const { createExpenseService } = require('./bot/expense-service');
+const { normalizeText } = require('./bot/text-utils');
 const { parsearGasto, parsearParcelamento } = require('./expense-parser');
+const {
+  createUserService,
+  isValidEmail,
+  normalizeEmail,
+} = require('./services/user-service');
+
+const SIGNUP_ASK_NAME = 'signup_ask_name';
+const SIGNUP_ASK_EMAIL = 'signup_ask_email';
+const SIGNUP_CONFIRM = 'signup_confirm';
+const SIGNUP_STEPS = new Set([
+  SIGNUP_ASK_NAME,
+  SIGNUP_ASK_EMAIL,
+  SIGNUP_CONFIRM,
+]);
+const SIGNUP_START_COMMANDS = new Set([
+  'cadastro',
+  'comecar cadastro',
+  'criar conta',
+]);
+const SIGNUP_CANCEL_COMMANDS = new Set([
+  'cancelar',
+  'cancelar cadastro',
+]);
+const ACCOUNT_LOGOUT_COMMANDS = new Set([
+  'sair da conta',
+]);
 
 function defaultFirebaseOps() {
   const { getFirebaseOps } = require('./firebase-db');
 
   return getFirebaseOps();
+}
+
+function normalizedCommand(value) {
+  return normalizeText(value).trim().replace(/\s+/g, ' ');
+}
+
+function isSignupStartCommand(value) {
+  return SIGNUP_START_COMMANDS.has(normalizedCommand(value));
+}
+
+function isSignupCancelCommand(value) {
+  return SIGNUP_CANCEL_COMMANDS.has(normalizedCommand(value));
+}
+
+function isAccountLogoutCommand(value) {
+  return ACCOUNT_LOGOUT_COMMANDS.has(normalizedCommand(value));
+}
+
+function isSignupActive(sessao) {
+  return SIGNUP_STEPS.has(sessao?.signupStep);
+}
+
+function hasLinkedAccountSession(sessao) {
+  return Boolean(sessao?.user && sessao?.group);
+}
+
+function clearSignupFields(sessao) {
+  const cleaned = { ...(sessao || {}) };
+
+  delete cleaned.signupStep;
+  delete cleaned.pendingName;
+  delete cleaned.pendingEmail;
+
+  return Object.keys(cleaned).length > 0 ? cleaned : null;
+}
+
+function clearAccountSessionFields(sessao) {
+  const cleaned = clearSignupFields(sessao) || {};
+
+  delete cleaned.user;
+  delete cleaned.group;
+
+  return Object.keys(cleaned).length > 0 ? cleaned : null;
+}
+
+function signupConfirmMessage(name, email) {
+  return [
+    'Confirma seus dados?',
+    '',
+    `Nome: ${name}`,
+    `E-mail: ${email}`,
+    '',
+    'Responda:',
+    '1 - Confirmar',
+    '2 - Corrigir',
+  ].join('\n');
+}
+
+function existingAccountMessage(user) {
+  return [
+    'Você já possui uma conta no SalvaMoney.',
+    '',
+    `Nome: ${user.name || '-'}`,
+    `E-mail: ${user.email || '-'}`,
+    `Sua tag: ${user.shareTag || '-'}`,
+  ].join('\n');
+}
+
+function welcomeSignupMessage(user, fallbackName) {
+  const name = user.name || fallbackName;
+
+  return [
+    `Seja bem-vinda, ${name}!`,
+    '',
+    `Sua tag no SalvaMoney é: ${user.shareTag}`,
+    '',
+    'Compartilhe essa tag com outras pessoas para dividir gastos e organizar contas.',
+  ].join('\n');
 }
 
 function createBotService({
@@ -28,6 +133,7 @@ function createBotService({
   groq,
   safeLog,
   sessionStore,
+  userService: providedUserService,
 }) {
   const SITE_URL = config.siteUrl;
   const TIME_ZONE = config.timeZone;
@@ -61,6 +167,10 @@ function createBotService({
     siteUrl: SITE_URL,
     todayIso,
   });
+  const userService = providedUserService || createUserService({
+    db,
+    firebaseOps: { get, ref, set },
+  });
   const aiMediaService = createAiMediaService({
     config,
     expenseService,
@@ -68,6 +178,135 @@ function createBotService({
     safeLog,
     todayIso,
   });
+
+  async function saveSignupSession(phone, sessao, data) {
+    await saveSession(phone, {
+      ...(sessao || {}),
+      ...data,
+    });
+  }
+
+  async function clearSignupSession(phone, sessao) {
+    await saveSession(phone, clearSignupFields(sessao));
+  }
+
+  async function logoutAccountSession(phone, sessao) {
+    await saveSession(phone, clearAccountSessionFields(sessao));
+
+    return [
+      'Você saiu da sua conta atual.',
+      '',
+      'Seu cadastro, sua tag e seus gastos foram preservados.',
+      '',
+      'Para entrar novamente, envie:',
+      'entrar SEU_NOME SEU_GRUPO',
+    ].join('\n');
+  }
+
+  async function startSignup(phone, sessao) {
+    const existingUser = await userService.getUserByPhone(phone);
+
+    if (existingUser) {
+      return existingAccountMessage(existingUser);
+    }
+
+    await saveSignupSession(phone, sessao, {
+      signupStep: SIGNUP_ASK_NAME,
+      pendingName: null,
+      pendingEmail: null,
+    });
+
+    return [
+      'Vamos criar sua conta no SalvaMoney.',
+      'Qual é o seu nome?',
+    ].join('\n');
+  }
+
+  async function processarCadastro(phone, msg, sessao) {
+    const signupActive = isSignupActive(sessao);
+
+    if (!signupActive && isSignupStartCommand(msg)) {
+      return await startSignup(phone, sessao);
+    }
+
+    if (!signupActive) {
+      return null;
+    }
+
+    if (isSignupCancelCommand(msg)) {
+      await clearSignupSession(phone, sessao);
+
+      return 'Cadastro cancelado. Quando quiser, envie "criar conta" novamente.';
+    }
+
+    if (sessao.signupStep === SIGNUP_ASK_NAME) {
+      const name = msg.trim();
+
+      if (!name) {
+        return 'Qual é o seu nome?';
+      }
+
+      await saveSignupSession(phone, sessao, {
+        signupStep: SIGNUP_ASK_EMAIL,
+        pendingName: name,
+        pendingEmail: null,
+      });
+
+      return 'Agora me envie seu e-mail.';
+    }
+
+    if (sessao.signupStep === SIGNUP_ASK_EMAIL) {
+      const email = normalizeEmail(msg);
+
+      if (!isValidEmail(email)) {
+        return [
+          'Esse e-mail parece inválido.',
+          'Envie novamente um e-mail válido.',
+        ].join('\n');
+      }
+
+      await saveSignupSession(phone, sessao, {
+        signupStep: SIGNUP_CONFIRM,
+        pendingEmail: email,
+      });
+
+      return signupConfirmMessage(sessao.pendingName, email);
+    }
+
+    if (sessao.signupStep === SIGNUP_CONFIRM) {
+      if (msg === '2') {
+        await saveSignupSession(phone, sessao, {
+          signupStep: SIGNUP_ASK_NAME,
+          pendingName: null,
+          pendingEmail: null,
+        });
+
+        return [
+          'Tudo bem. Vamos começar de novo.',
+          'Qual é o seu nome?',
+        ].join('\n');
+      }
+
+      if (msg !== '1') {
+        return [
+          'Responda:',
+          '1 - Confirmar',
+          '2 - Corrigir',
+        ].join('\n');
+      }
+
+      const user = await userService.getOrCreateUserByPhone(phone, {
+        name: sessao.pendingName,
+        email: sessao.pendingEmail,
+      });
+
+      await clearSignupSession(phone, sessao);
+
+      return welcomeSignupMessage(user, sessao.pendingName);
+    }
+
+    return null;
+  }
 
   // ─── MENSAGEM PRINCIPAL ───────────────────────────────────
   async function processarMensagem(phone, texto, mediaInfo = null) {
@@ -134,10 +373,20 @@ function createBotService({
         '🌐 *Ver no site:*',
         SITE_URL,
         '',
-        sessao
+        hasLinkedAccountSession(sessao)
           ? `✅ Conta atual: *${sessao.user}* | Grupo: *${sessao.group}*`
           : '⚠️ Você ainda não vinculou uma conta.',
       ].join('\n');
+    }
+
+    if (isAccountLogoutCommand(msg)) {
+      return await logoutAccountSession(phone, sessao);
+    }
+
+    const respostaCadastro = await processarCadastro(phone, msg, sessao);
+
+    if (respostaCadastro) {
+      return respostaCadastro;
     }
 
     const respostaConta = await accountService.processarComandoConta({
@@ -151,7 +400,7 @@ function createBotService({
     }
 
     // ── SEM SESSÃO ──
-    if (!sessao) {
+    if (!hasLinkedAccountSession(sessao)) {
       return `⚠️ Para usar o SalvaMoney, primeiro vincule sua conta.
 
 Se você já tem um código, digite:

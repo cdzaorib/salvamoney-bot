@@ -80,6 +80,7 @@ function createService({
   groqOverrides = {},
   seed = {},
   session = null,
+  userService,
 } = {}) {
   const firebase = createFakeFirebase(seed);
   const savedSessions = [];
@@ -102,6 +103,7 @@ function createService({
     },
     safeLog,
     sessionStore,
+    userService,
   });
 
   return {
@@ -109,6 +111,95 @@ function createService({
     savedSessions,
     service,
   };
+}
+
+function createStatefulService({
+  configOverrides = {},
+  groqOverrides = {},
+  initialSession = null,
+  seed = {},
+  userService,
+} = {}) {
+  const firebase = createFakeFirebase(seed);
+  const savedSessions = [];
+  let session = initialSession;
+  const sessionStore = {
+    getSession: async () => session,
+    saveSession: async (phone, data) => {
+      session = data;
+      savedSessions.push({ phone, data });
+    },
+  };
+  const service = createBotService({
+    config: {
+      ...config,
+      ...configOverrides,
+    },
+    db: {},
+    firebaseOps: firebase.ops,
+    groq: {
+      ...groq,
+      ...groqOverrides,
+    },
+    safeLog,
+    sessionStore,
+    userService,
+  });
+
+  return {
+    firebase,
+    getSession: () => session,
+    savedSessions,
+    service,
+  };
+}
+
+function firstNameTag(name) {
+  const firstName = String(name || '')
+    .trim()
+    .split(/\s+/)[0]
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '') || 'USUARIO';
+
+  return `${firstName}-8K2P7Q`;
+}
+
+function createSignupUserService(initialUsers = {}) {
+  const calls = [];
+  const users = new Map(Object.entries(initialUsers));
+  const service = {
+    calls,
+    users,
+    async getUserByPhone(phone) {
+      calls.push({ method: 'getUserByPhone', phone });
+
+      return users.get(phone) || null;
+    },
+    async getOrCreateUserByPhone(phone, data) {
+      calls.push({ method: 'getOrCreateUserByPhone', data, phone });
+
+      const existingUser = users.get(phone);
+
+      if (existingUser) {
+        return existingUser;
+      }
+
+      const user = {
+        phone,
+        name: data.name,
+        email: data.email,
+        shareTag: firstNameTag(data.name),
+      };
+
+      users.set(phone, user);
+
+      return user;
+    },
+  };
+
+  return service;
 }
 
 test('oi returns help without external services', async () => {
@@ -160,6 +251,315 @@ test('trocar conta links the phone to the requested account', async () => {
       updatedAt: todayIso(),
     },
   }]);
+});
+
+test('criar conta starts the WhatsApp signup flow', async () => {
+  const userService = createSignupUserService();
+  const { savedSessions, service } = createService({ userService });
+  const resposta = await service.processarMensagem('5511999999999', 'criar conta');
+
+  assert.equal(resposta, [
+    'Vamos criar sua conta no SalvaMoney.',
+    'Qual é o seu nome?',
+  ].join('\n'));
+  assert.deepEqual(savedSessions, [{
+    phone: '5511999999999',
+    data: {
+      signupStep: 'signup_ask_name',
+      pendingName: null,
+      pendingEmail: null,
+    },
+  }]);
+});
+
+test('signup flow stores the name temporarily before asking for email', async () => {
+  const userService = createSignupUserService();
+  const { savedSessions, service } = createService({
+    session: { signupStep: 'signup_ask_name' },
+    userService,
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'Anna');
+
+  assert.equal(resposta, 'Agora me envie seu e-mail.');
+  assert.deepEqual(savedSessions, [{
+    phone: '5511999999999',
+    data: {
+      signupStep: 'signup_ask_email',
+      pendingName: 'Anna',
+      pendingEmail: null,
+    },
+  }]);
+});
+
+test('signup flow rejects invalid email without saving progress', async () => {
+  const userService = createSignupUserService();
+  const { savedSessions, service } = createService({
+    session: {
+      signupStep: 'signup_ask_email',
+      pendingName: 'Anna',
+    },
+    userService,
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'email-invalido');
+
+  assert.equal(resposta, [
+    'Esse e-mail parece inválido.',
+    'Envie novamente um e-mail válido.',
+  ].join('\n'));
+  assert.deepEqual(savedSessions, []);
+});
+
+test('signup flow normalizes a valid email and asks for confirmation', async () => {
+  const userService = createSignupUserService();
+  const { savedSessions, service } = createService({
+    session: {
+      signupStep: 'signup_ask_email',
+      pendingName: 'Anna',
+    },
+    userService,
+  });
+  const resposta = await service.processarMensagem('5511999999999', '  ANNA@EMAIL.COM  ');
+
+  assert.equal(resposta, [
+    'Confirma seus dados?',
+    '',
+    'Nome: Anna',
+    'E-mail: anna@email.com',
+    '',
+    'Responda:',
+    '1 - Confirmar',
+    '2 - Corrigir',
+  ].join('\n'));
+  assert.deepEqual(savedSessions, [{
+    phone: '5511999999999',
+    data: {
+      signupStep: 'signup_confirm',
+      pendingName: 'Anna',
+      pendingEmail: 'anna@email.com',
+    },
+  }]);
+});
+
+test('signup flow creates the user when confirmation is accepted', async () => {
+  const userService = createSignupUserService();
+  const { savedSessions, service } = createService({
+    session: {
+      signupStep: 'signup_confirm',
+      pendingName: 'Anna',
+      pendingEmail: 'anna@email.com',
+    },
+    userService,
+  });
+  const resposta = await service.processarMensagem('5511999999999', '1');
+
+  assert.equal(resposta, [
+    'Seja bem-vinda, Anna!',
+    '',
+    'Sua tag no SalvaMoney é: ANNA-8K2P7Q',
+    '',
+    'Compartilhe essa tag com outras pessoas para dividir gastos e organizar contas.',
+  ].join('\n'));
+  assert.deepEqual(userService.calls, [{
+    method: 'getOrCreateUserByPhone',
+    phone: '5511999999999',
+    data: {
+      name: 'Anna',
+      email: 'anna@email.com',
+    },
+  }]);
+  assert.deepEqual(savedSessions, [{
+    phone: '5511999999999',
+    data: null,
+  }]);
+});
+
+test('signup cancellation clears only temporary signup fields', async () => {
+  const userService = createSignupUserService();
+  const { savedSessions, service } = createService({
+    session: {
+      group: 'CASA2024',
+      pendingEmail: null,
+      pendingName: 'Anna',
+      signupStep: 'signup_ask_email',
+      user: 'Ana',
+    },
+    userService,
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'cancelar');
+
+  assert.equal(resposta, 'Cadastro cancelado. Quando quiser, envie "criar conta" novamente.');
+  assert.deepEqual(savedSessions, [{
+    phone: '5511999999999',
+    data: {
+      group: 'CASA2024',
+      user: 'Ana',
+    },
+  }]);
+});
+
+test('sair da conta logs out from the current session and preserves persisted records', async () => {
+  const { firebase, savedSessions, service } = createService({
+    seed: {
+      grupos: {
+        CASA2024: {
+          usuarios: {
+            Ana: {
+              gastos: {
+                [currentMonthKey()]: {
+                  gasto_1: {
+                    cat: 'Transporte',
+                    desc: 'uber',
+                    value: 35,
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      shareTags: {
+        'ANNA-8K2P7Q': {
+          phone: '5511999999999',
+        },
+      },
+      users: {
+        5511999999999: {
+          phone: '5511999999999',
+          name: 'Anna',
+          email: 'anna@email.com',
+          shareTag: 'ANNA-8K2P7Q',
+        },
+      },
+    },
+    session: {
+      group: 'CASA2024',
+      lastSeen: '2026-05-25',
+      pendingEmail: 'anna@email.com',
+      pendingName: 'Anna',
+      signupStep: 'signup_confirm',
+      user: 'Ana',
+    },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'sair da conta');
+
+  assert.equal(resposta, [
+    'Você saiu da sua conta atual.',
+    '',
+    'Seu cadastro, sua tag e seus gastos foram preservados.',
+    '',
+    'Para entrar novamente, envie:',
+    'entrar SEU_NOME SEU_GRUPO',
+  ].join('\n'));
+  assert.deepEqual(savedSessions, [{
+    phone: '5511999999999',
+    data: {
+      lastSeen: '2026-05-25',
+    },
+  }]);
+  assert.deepEqual(firebase.removals, []);
+  assert.deepEqual(firebase.getValue('users/5511999999999'), {
+    phone: '5511999999999',
+    name: 'Anna',
+    email: 'anna@email.com',
+    shareTag: 'ANNA-8K2P7Q',
+  });
+  assert.deepEqual(firebase.getValue('shareTags/ANNA-8K2P7Q'), {
+    phone: '5511999999999',
+  });
+  assert.deepEqual(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${currentMonthKey()}/gasto_1`), {
+    cat: 'Transporte',
+    desc: 'uber',
+    value: 35,
+  });
+});
+
+test('signup correction restarts from the name step', async () => {
+  const userService = createSignupUserService();
+  const { savedSessions, service } = createService({
+    session: {
+      signupStep: 'signup_confirm',
+      pendingName: 'Anna',
+      pendingEmail: 'anna@email.com',
+    },
+    userService,
+  });
+  const resposta = await service.processarMensagem('5511999999999', '2');
+
+  assert.equal(resposta, [
+    'Tudo bem. Vamos começar de novo.',
+    'Qual é o seu nome?',
+  ].join('\n'));
+  assert.deepEqual(savedSessions, [{
+    phone: '5511999999999',
+    data: {
+      signupStep: 'signup_ask_name',
+      pendingName: null,
+      pendingEmail: null,
+    },
+  }]);
+});
+
+test('criar conta for an existing user does not create a new shareTag', async () => {
+  const userService = createSignupUserService({
+    5511999999999: {
+      phone: '5511999999999',
+      name: 'Anna',
+      email: 'anna@email.com',
+      shareTag: 'ANNA-8K2P7Q',
+    },
+  });
+  const { savedSessions, service } = createService({ userService });
+  const resposta = await service.processarMensagem('5511999999999', 'criar conta');
+
+  assert.match(resposta, /Você já possui uma conta no SalvaMoney/);
+  assert.match(resposta, /Nome: Anna/);
+  assert.match(resposta, /E-mail: anna@email.com/);
+  assert.match(resposta, /Sua tag: ANNA-8K2P7Q/);
+  assert.deepEqual(userService.calls, [{
+    method: 'getUserByPhone',
+    phone: '5511999999999',
+  }]);
+  assert.deepEqual(savedSessions, []);
+});
+
+test('signup flow keeps normal expense parsing inactive while waiting for user data', async () => {
+  const userService = createSignupUserService();
+  const { firebase, service } = createStatefulService({
+    initialSession: { signupStep: 'signup_ask_name' },
+    seed: expenseSeed(),
+    userService,
+  });
+  const resposta = await service.processarMensagem('5511999999999', '35 uber');
+
+  assert.equal(resposta, 'Agora me envie seu e-mail.');
+  assert.equal(firebase.pushes.length, 0);
+});
+
+test('normal text expense still works when signup is not active', async () => {
+  const { firebase, service } = createService({
+    seed: expenseSeed(),
+    session: { group: 'CASA2024', user: 'Ana' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', '35 uber');
+
+  assert.match(resposta, /uber/);
+  assert.match(resposta, /registrado/);
+  assert.equal(firebase.pushes.length, 1);
+  assert.match(firebase.pushes[0].path, /grupos\/CASA2024\/usuarios\/Ana\/gastos\//);
+  assert.equal(firebase.pushes[0].value.origem, 'texto');
+});
+
+test('normal text expense asks to link an account after sair da conta', async () => {
+  const { firebase, service } = createStatefulService({
+    initialSession: { group: 'CASA2024', user: 'Ana' },
+    seed: expenseSeed(),
+  });
+  const logout = await service.processarMensagem('5511999999999', 'sair da conta');
+  const resposta = await service.processarMensagem('5511999999999', '35 uber');
+
+  assert.match(logout, /Você saiu da sua conta atual/);
+  assert.match(resposta, /Para usar o SalvaMoney, primeiro vincule sua conta/);
+  assert.equal(firebase.pushes.length, 0);
 });
 
 test('resumo summarizes the current month session expenses', async () => {
