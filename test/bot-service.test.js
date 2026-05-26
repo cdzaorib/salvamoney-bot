@@ -209,6 +209,16 @@ function createSignupUserService(initialUsers = {}) {
   return service;
 }
 
+const MINHA_TAG_PHRASES = [
+  'minha tag',
+  'qual minha tag',
+  'qual é minha tag',
+  'qual é a minha tag',
+  'ver minha tag',
+  'mostrar minha tag',
+  'minha tag?',
+];
+
 test('oi returns help without external services', async () => {
   const { service } = createService();
   const resposta = await service.processarMensagem('5511999999999', 'oi');
@@ -557,6 +567,39 @@ test('minha tag returns the existing public shareTag', async () => {
   assert.equal(firebase.pushes.length, 0);
 });
 
+test('natural minha tag phrases return users phone shareTag and never session user', async () => {
+  const userService = createSignupUserService({
+    5511999999999: {
+      phone: '5511999999999',
+      name: 'Anna',
+      email: 'anna@email.com',
+      shareTag: 'ANNA-8K2P7Q',
+    },
+  });
+  const { firebase, service } = createService({
+    seed: expenseSeed(),
+    session: { group: 'CASA2024', user: 'carlos' },
+    userService,
+  });
+
+  for (const phrase of MINHA_TAG_PHRASES) {
+    const resposta = await service.processarMensagem('5511999999999', phrase);
+
+    assert.equal(resposta, [
+      'Sua tag no SalvaMoney é: ANNA-8K2P7Q',
+      '',
+      'Compartilhe essa tag com outras pessoas para dividir gastos e organizar contas.',
+    ].join('\n'), phrase);
+    assert.doesNotMatch(resposta, /carlos/i, phrase);
+  }
+
+  assert.equal(firebase.pushes.length, 0);
+  assert.deepEqual(userService.calls, MINHA_TAG_PHRASES.map(() => ({
+    method: 'getUserByPhone',
+    phone: '5511999999999',
+  })));
+});
+
 test('minha tag without user asks to create an account', async () => {
   const userService = createSignupUserService();
   const { firebase, savedSessions, service } = createService({
@@ -571,6 +614,30 @@ test('minha tag without user asks to create an account', async () => {
     'Para criar, envie:',
     'criar conta',
   ].join('\n'));
+  assert.deepEqual(userService.calls, [{
+    method: 'getUserByPhone',
+    phone: '5511999999999',
+  }]);
+  assert.equal(firebase.pushes.length, 0);
+  assert.deepEqual(savedSessions, []);
+});
+
+test('natural minha tag phrase without user asks to create an account', async () => {
+  const userService = createSignupUserService();
+  const { firebase, savedSessions, service } = createService({
+    seed: expenseSeed(),
+    session: { group: 'CASA2024', user: 'carlos' },
+    userService,
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'qual minha tag');
+
+  assert.equal(resposta, [
+    'Você ainda não criou sua conta no SalvaMoney.',
+    '',
+    'Para criar, envie:',
+    'criar conta',
+  ].join('\n'));
+  assert.doesNotMatch(resposta, /carlos/i);
   assert.deepEqual(userService.calls, [{
     method: 'getUserByPhone',
     phone: '5511999999999',

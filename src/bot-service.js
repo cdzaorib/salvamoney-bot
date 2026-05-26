@@ -43,6 +43,11 @@ const ACCOUNT_LOGOUT_COMMANDS = new Set([
 ]);
 const MY_TAG_COMMANDS = new Set([
   'minha tag',
+  'mostrar minha tag',
+  'qual e a minha tag',
+  'qual e minha tag',
+  'qual minha tag',
+  'ver minha tag',
 ]);
 const MY_PROFILE_COMMANDS = new Set([
   'meu perfil',
@@ -59,6 +64,10 @@ function normalizedCommand(value) {
   return normalizeText(value).trim().replace(/\s+/g, ' ');
 }
 
+function normalizedQuestionCommand(value) {
+  return normalizedCommand(value).replace(/[?!.]+$/g, '').trim();
+}
+
 function isSignupStartCommand(value) {
   return SIGNUP_START_COMMANDS.has(normalizedCommand(value));
 }
@@ -72,7 +81,7 @@ function isAccountLogoutCommand(value) {
 }
 
 function isMyTagCommand(value) {
-  return MY_TAG_COMMANDS.has(normalizedCommand(value));
+  return MY_TAG_COMMANDS.has(normalizedQuestionCommand(value));
 }
 
 function isMyProfileCommand(value) {
