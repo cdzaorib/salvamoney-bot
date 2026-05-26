@@ -41,6 +41,12 @@ const SIGNUP_CANCEL_COMMANDS = new Set([
 const ACCOUNT_LOGOUT_COMMANDS = new Set([
   'sair da conta',
 ]);
+const MY_TAG_COMMANDS = new Set([
+  'minha tag',
+]);
+const MY_PROFILE_COMMANDS = new Set([
+  'meu perfil',
+]);
 
 function defaultFirebaseOps() {
   const { getFirebaseOps } = require('./firebase-db');
@@ -62,6 +68,14 @@ function isSignupCancelCommand(value) {
 
 function isAccountLogoutCommand(value) {
   return ACCOUNT_LOGOUT_COMMANDS.has(normalizedCommand(value));
+}
+
+function isMyTagCommand(value) {
+  return MY_TAG_COMMANDS.has(normalizedCommand(value));
+}
+
+function isMyProfileCommand(value) {
+  return MY_PROFILE_COMMANDS.has(normalizedCommand(value));
 }
 
 function isSignupActive(sessao) {
@@ -123,6 +137,33 @@ function welcomeSignupMessage(user, fallbackName) {
     `Sua tag no SalvaMoney é: ${user.shareTag}`,
     '',
     'Compartilhe essa tag com outras pessoas para dividir gastos e organizar contas.',
+  ].join('\n');
+}
+
+function missingUserAccountMessage() {
+  return [
+    'Você ainda não criou sua conta no SalvaMoney.',
+    '',
+    'Para criar, envie:',
+    'criar conta',
+  ].join('\n');
+}
+
+function myTagMessage(user) {
+  return [
+    `Sua tag no SalvaMoney é: ${user.shareTag}`,
+    '',
+    'Compartilhe essa tag com outras pessoas para dividir gastos e organizar contas.',
+  ].join('\n');
+}
+
+function myProfileMessage(user) {
+  return [
+    'Seu perfil no SalvaMoney:',
+    '',
+    `Nome: ${user.name || '-'}`,
+    `E-mail: ${user.email || '-'}`,
+    `Tag: ${user.shareTag || '-'}`,
   ].join('\n');
 }
 
@@ -201,6 +242,22 @@ function createBotService({
       'Para entrar novamente, envie:',
       'entrar SEU_NOME SEU_GRUPO',
     ].join('\n');
+  }
+
+  async function processarConsultaUsuario(phone, msg) {
+    if (!isMyTagCommand(msg) && !isMyProfileCommand(msg)) {
+      return null;
+    }
+
+    const user = await userService.getUserByPhone(phone);
+
+    if (!user) {
+      return missingUserAccountMessage();
+    }
+
+    return isMyTagCommand(msg)
+      ? myTagMessage(user)
+      : myProfileMessage(user);
   }
 
   async function startSignup(phone, sessao) {
@@ -381,6 +438,12 @@ function createBotService({
 
     if (isAccountLogoutCommand(msg)) {
       return await logoutAccountSession(phone, sessao);
+    }
+
+    const respostaConsultaUsuario = await processarConsultaUsuario(phone, msg);
+
+    if (respostaConsultaUsuario) {
+      return respostaConsultaUsuario;
     }
 
     const respostaCadastro = await processarCadastro(phone, msg, sessao);

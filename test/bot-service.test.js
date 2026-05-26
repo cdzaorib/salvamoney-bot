@@ -522,6 +522,129 @@ test('criar conta for an existing user does not create a new shareTag', async ()
   assert.deepEqual(savedSessions, []);
 });
 
+test('minha tag returns the existing public shareTag', async () => {
+  const userService = createSignupUserService({
+    5511999999999: {
+      phone: '5511999999999',
+      name: 'Anna',
+      email: 'anna@email.com',
+      shareTag: 'ANNA-8K2P7Q',
+    },
+  });
+  const { firebase, service } = createService({
+    seed: expenseSeed(),
+    session: { group: 'CASA2024', user: 'Ana' },
+    userService,
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'minha tag');
+
+  assert.equal(resposta, [
+    'Sua tag no SalvaMoney é: ANNA-8K2P7Q',
+    '',
+    'Compartilhe essa tag com outras pessoas para dividir gastos e organizar contas.',
+  ].join('\n'));
+  assert.deepEqual(userService.calls, [{
+    method: 'getUserByPhone',
+    phone: '5511999999999',
+  }]);
+  assert.equal(firebase.pushes.length, 0);
+});
+
+test('minha tag without user asks to create an account', async () => {
+  const userService = createSignupUserService();
+  const { firebase, savedSessions, service } = createService({
+    seed: expenseSeed(),
+    userService,
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'minha tag');
+
+  assert.equal(resposta, [
+    'Você ainda não criou sua conta no SalvaMoney.',
+    '',
+    'Para criar, envie:',
+    'criar conta',
+  ].join('\n'));
+  assert.deepEqual(userService.calls, [{
+    method: 'getUserByPhone',
+    phone: '5511999999999',
+  }]);
+  assert.equal(firebase.pushes.length, 0);
+  assert.deepEqual(savedSessions, []);
+});
+
+test('meu perfil returns the existing user profile', async () => {
+  const userService = createSignupUserService({
+    5511999999999: {
+      phone: '5511999999999',
+      name: 'Anna',
+      email: 'anna@email.com',
+      shareTag: 'ANNA-8K2P7Q',
+    },
+  });
+  const { firebase, service } = createService({
+    seed: expenseSeed(),
+    session: { group: 'CASA2024', user: 'Ana' },
+    userService,
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'meu perfil');
+
+  assert.equal(resposta, [
+    'Seu perfil no SalvaMoney:',
+    '',
+    'Nome: Anna',
+    'E-mail: anna@email.com',
+    'Tag: ANNA-8K2P7Q',
+  ].join('\n'));
+  assert.deepEqual(userService.calls, [{
+    method: 'getUserByPhone',
+    phone: '5511999999999',
+  }]);
+  assert.equal(firebase.pushes.length, 0);
+});
+
+test('meu perfil without user asks to create an account', async () => {
+  const userService = createSignupUserService();
+  const { firebase, savedSessions, service } = createService({
+    seed: expenseSeed(),
+    userService,
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'meu perfil');
+
+  assert.equal(resposta, [
+    'Você ainda não criou sua conta no SalvaMoney.',
+    '',
+    'Para criar, envie:',
+    'criar conta',
+  ].join('\n'));
+  assert.deepEqual(userService.calls, [{
+    method: 'getUserByPhone',
+    phone: '5511999999999',
+  }]);
+  assert.equal(firebase.pushes.length, 0);
+  assert.deepEqual(savedSessions, []);
+});
+
+test('profile lookup commands do not register expenses', async () => {
+  const userService = createSignupUserService({
+    5511999999999: {
+      phone: '5511999999999',
+      name: 'Anna',
+      email: 'anna@email.com',
+      shareTag: 'ANNA-8K2P7Q',
+    },
+  });
+  const { firebase, service } = createService({
+    seed: expenseSeed(),
+    session: { group: 'CASA2024', user: 'Ana' },
+    userService,
+  });
+
+  await service.processarMensagem('5511999999999', 'minha tag');
+  await service.processarMensagem('5511999999999', 'meu perfil');
+
+  assert.equal(firebase.pushes.length, 0);
+});
+
 test('signup flow keeps normal expense parsing inactive while waiting for user data', async () => {
   const userService = createSignupUserService();
   const { firebase, service } = createStatefulService({
