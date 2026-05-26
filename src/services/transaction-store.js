@@ -17,12 +17,28 @@ function createTransactionStore({
     return `grupos/${group}/usuarios/${user}/gastos/${monthKey(date)}`;
   }
 
+  function legacyMonthlyExpensesPathByMonthKey(group, user, expenseMonthKey) {
+    return `grupos/${group}/usuarios/${user}/gastos/${expenseMonthKey}`;
+  }
+
   function transactionsByUserMonthlyPath(phone, date) {
     return `transactionsByUser/${normalizePhone(phone)}/${monthKey(date)}`;
   }
 
-  function legacyExpensePath(group, user, date, id) {
-    return `${legacyMonthlyExpensesPath(group, user, date)}/${id}`;
+  function transactionsByUserMonthlyPathByMonthKey(phone, expenseMonthKey) {
+    return `transactionsByUser/${normalizePhone(phone)}/${expenseMonthKey}`;
+  }
+
+  function resolveExpenseMonthKey(date, expenseMonthKey) {
+    return expenseMonthKey || monthKey(date);
+  }
+
+  function legacyExpensePath(group, user, date, id, expenseMonthKey) {
+    return `${legacyMonthlyExpensesPathByMonthKey(
+      group,
+      user,
+      resolveExpenseMonthKey(date, expenseMonthKey)
+    )}/${id}`;
   }
 
   async function listMonthlyExpensesWithIds({ group, user, date }) {
@@ -31,6 +47,12 @@ function createTransactionStore({
     return Object.entries(snap.val() || {})
       .map(([id, item]) => ({ id, ...item }))
       .filter((item) => item && Number.isFinite(Number(item.value)));
+  }
+
+  async function listExpenseMonths({ group, user }) {
+    const snap = await get(ref(db, `grupos/${group}/usuarios/${user}/gastos`));
+
+    return Object.keys(snap.val() || {}).sort();
   }
 
   async function saveExpenseByPhone({
@@ -81,18 +103,85 @@ function createTransactionStore({
     return legacyResult;
   }
 
-  async function removeExpenseById({ group, user, date, id }) {
-    await remove(ref(db, legacyExpensePath(group, user, date, id)));
+  async function removeExpenseById({
+    group,
+    user,
+    phone,
+    date,
+    expenseMonthKey,
+    id,
+    removePhoneCopy = false,
+  }) {
+    const resolvedMonthKey = resolveExpenseMonthKey(date, expenseMonthKey);
+
+    await remove(ref(db, legacyExpensePath(group, user, date, id, resolvedMonthKey)));
+
+    if (removePhoneCopy && normalizePhone(phone)) {
+      await remove(ref(db, `${transactionsByUserMonthlyPathByMonthKey(phone, resolvedMonthKey)}/${id}`));
+    }
+  }
+
+  async function listExpensesByParcelaId({ group, user, parcelaId }) {
+    if (!parcelaId) {
+      return [];
+    }
+
+    const months = await listExpenseMonths({ group, user });
+    const expenses = [];
+
+    for (const expenseMonthKey of months) {
+      const snap = await get(ref(db, legacyMonthlyExpensesPathByMonthKey(group, user, expenseMonthKey)));
+
+      Object.entries(snap.val() || {}).forEach(([id, item]) => {
+        if (item?.parcelaId === parcelaId) {
+          expenses.push({
+            id,
+            monthKey: expenseMonthKey,
+            ...item,
+          });
+        }
+      });
+    }
+
+    return expenses;
+  }
+
+  async function removeExpensesByParcelaId({
+    group,
+    user,
+    phone,
+    parcelaId,
+    removePhoneCopy = true,
+  }) {
+    const expenses = await listExpensesByParcelaId({ group, user, parcelaId });
+
+    for (const expense of expenses) {
+      await removeExpenseById({
+        group,
+        user,
+        phone,
+        expenseMonthKey: expense.monthKey,
+        id: expense.id,
+        removePhoneCopy,
+      });
+    }
+
+    return expenses;
   }
 
   return {
     legacyExpensePath,
     legacyMonthlyExpensesPath,
+    legacyMonthlyExpensesPathByMonthKey,
+    listExpenseMonths,
+    listExpensesByParcelaId,
     listMonthlyExpensesWithIds,
     removeExpenseById,
+    removeExpensesByParcelaId,
     saveExpense,
     saveExpenseByPhone,
     transactionsByUserMonthlyPath,
+    transactionsByUserMonthlyPathByMonthKey,
   };
 }
 

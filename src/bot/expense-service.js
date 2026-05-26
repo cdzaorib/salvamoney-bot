@@ -13,6 +13,22 @@ function formatMoney(value) {
   })}`;
 }
 
+function installmentDeleteConfirmationMessage(expense) {
+  return [
+    'Encontrei um parcelamento:',
+    expense.desc || 'Gasto parcelado',
+    '',
+    'Quer apagar:',
+    '1 - Somente esta parcela',
+    '2 - Todas as parcelas deste parcelamento',
+    '3 - Cancelar',
+  ].join('\n');
+}
+
+function pluralizeParcelas(count) {
+  return count === 1 ? '1 parcela' : `${count} parcelas`;
+}
+
 function createExpenseService({
   dateUtils,
   db,
@@ -247,7 +263,60 @@ Se foi errado: _apagar último_`;
     });
   }
 
-  async function apagarGastoPorTexto(session, text) {
+  function pendingDeleteFromExpense(session, expense) {
+    return {
+      type: 'installment',
+      parcelaId: expense.parcelaId,
+      currentExpenseId: expense.id,
+      currentMonthKey: monthKey(),
+      desc: expense.desc || 'Gasto parcelado',
+      group: session.group,
+      user: session.user,
+    };
+  }
+
+  async function finishDeleteExpense(session, expense, options = {}) {
+    if (expense.parcelaId && options.confirmInstallment) {
+      return {
+        message: installmentDeleteConfirmationMessage(expense),
+        pendingDelete: pendingDeleteFromExpense(session, expense),
+      };
+    }
+
+    await apagarGastoPorId(session, expense.id);
+
+    return `🗑️ Apaguei:
+*${expense.desc || 'Gasto'}* — ${formatMoney(expense.value)} (${expense.cat || 'Outros'})`;
+  }
+
+  async function apagarParcelaPendente(session, pendingDelete) {
+    await transactionStore.removeExpenseById({
+      group: pendingDelete.group,
+      user: pendingDelete.user,
+      phone: session.phone,
+      expenseMonthKey: pendingDelete.currentMonthKey,
+      id: pendingDelete.currentExpenseId,
+      removePhoneCopy: true,
+    });
+
+    return `🗑️ Apaguei somente esta parcela:
+*${pendingDelete.desc || 'Gasto parcelado'}*`;
+  }
+
+  async function apagarParcelamentoPendente(session, pendingDelete) {
+    const removed = await transactionStore.removeExpensesByParcelaId({
+      group: pendingDelete.group,
+      user: pendingDelete.user,
+      phone: session.phone,
+      parcelaId: pendingDelete.parcelaId,
+      removePhoneCopy: true,
+    });
+
+    return `🗑️ Apaguei ${pluralizeParcelas(removed.length)} deste parcelamento:
+*${pendingDelete.desc || 'Gasto parcelado'}*`;
+  }
+
+  async function apagarGastoPorTexto(session, text, options = {}) {
     const items = await getGastosMesComIds(session.group, session.user);
 
     if (!items.length) {
@@ -261,10 +330,7 @@ Se foi errado: _apagar último_`;
     if (isLatest && !informedValue) {
       const latest = items.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))[0];
 
-      await apagarGastoPorId(session, latest.id);
-
-      return `🗑️ Apaguei:
-*${latest.desc || 'Gasto'}* — ${formatMoney(latest.value)} (${latest.cat || 'Outros'})`;
+      return await finishDeleteExpense(session, latest, options);
     }
 
     let candidates = [...items];
@@ -300,13 +366,12 @@ _apagar mercado_`;
       String(b.createdAt || '').localeCompare(String(a.createdAt || ''))
     )[0];
 
-    await apagarGastoPorId(session, chosen.id);
-
-    return `🗑️ Apaguei:
-*${chosen.desc || 'Gasto'}* — ${formatMoney(chosen.value)} (${chosen.cat || 'Outros'})`;
+    return await finishDeleteExpense(session, chosen, options);
   }
 
   return {
+    apagarParcelaPendente,
+    apagarParcelamentoPendente,
     apagarGastoPorId,
     apagarGastoPorTexto,
     getGastosMesComIds,

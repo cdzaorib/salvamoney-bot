@@ -53,6 +53,14 @@ function currentMonthKey() {
   return `${parts.year}_${Number(parts.month) - 1}`;
 }
 
+function monthKeyOffset(offset) {
+  const parts = utcDateParts();
+  const date = new Date(Date.UTC(Number(parts.year), Number(parts.month) - 1 + offset, Number(parts.day)));
+  const offsetParts = utcDateParts(date);
+
+  return `${offsetParts.year}_${Number(offsetParts.month) - 1}`;
+}
+
 function todayIso() {
   const parts = utcDateParts();
 
@@ -68,6 +76,96 @@ function expenseSeed(expenses = {}) {
             gastos: {
               [currentMonthKey()]: expenses,
             },
+          },
+        },
+      },
+    },
+  };
+}
+
+function installmentExpenseSeed() {
+  return {
+    grupos: {
+      CASA2024: {
+        usuarios: {
+          Ana: {
+            gastos: {
+              [monthKeyOffset(0)]: {
+                tv_1: {
+                  cat: 'Lazer',
+                  createdAt: '2026-05-20T10:00:00.000Z',
+                  date: todayIso(),
+                  desc: 'TV (1/3x)',
+                  parcelaId: 'tv-123',
+                  parcelaNum: 1,
+                  parcelaTotal: 3,
+                  value: 400,
+                },
+                tv_normal: {
+                  cat: 'Lazer',
+                  createdAt: '2026-05-20T09:00:00.000Z',
+                  date: todayIso(),
+                  desc: 'TV',
+                  value: 1200,
+                },
+              },
+              [monthKeyOffset(1)]: {
+                tv_2: {
+                  cat: 'Lazer',
+                  createdAt: '2026-05-20T10:00:00.000Z',
+                  desc: 'TV (2/3x)',
+                  parcelaId: 'tv-123',
+                  parcelaNum: 2,
+                  parcelaTotal: 3,
+                  value: 400,
+                },
+                notebook_1: {
+                  cat: 'Educação',
+                  createdAt: '2026-05-20T10:00:00.000Z',
+                  desc: 'Notebook (1/2x)',
+                  parcelaId: 'note-456',
+                  parcelaNum: 1,
+                  parcelaTotal: 2,
+                  value: 500,
+                },
+              },
+              [monthKeyOffset(2)]: {
+                tv_3: {
+                  cat: 'Lazer',
+                  createdAt: '2026-05-20T10:00:00.000Z',
+                  desc: 'TV (3/3x)',
+                  parcelaId: 'tv-123',
+                  parcelaNum: 3,
+                  parcelaTotal: 3,
+                  value: 400,
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    transactionsByUser: {
+      5511999999999: {
+        [monthKeyOffset(0)]: {
+          tv_1: {
+            desc: 'TV (1/3x)',
+            parcelaId: 'tv-123',
+            value: 400,
+          },
+        },
+        [monthKeyOffset(1)]: {
+          tv_2: {
+            desc: 'TV (2/3x)',
+            parcelaId: 'tv-123',
+            value: 400,
+          },
+        },
+        [monthKeyOffset(2)]: {
+          tv_3: {
+            desc: 'TV (3/3x)',
+            parcelaId: 'tv-123',
+            value: 400,
           },
         },
       },
@@ -1037,6 +1135,192 @@ test('apagar ultimo removes the latest expense in the fake Firebase tree', async
     desc: 'uber',
     value: 20,
   });
+});
+
+test('apagar TV with installment expense asks for confirmation before deleting', async () => {
+  const { firebase, getSession, service } = createStatefulService({
+    initialSession: { group: 'CASA2024', user: 'Ana' },
+    seed: installmentExpenseSeed(),
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'apagar TV');
+
+  assert.equal(resposta, [
+    'Encontrei um parcelamento:',
+    'TV (1/3x)',
+    '',
+    'Quer apagar:',
+    '1 - Somente esta parcela',
+    '2 - Todas as parcelas deste parcelamento',
+    '3 - Cancelar',
+  ].join('\n'));
+  assert.deepEqual(getSession(), {
+    group: 'CASA2024',
+    user: 'Ana',
+    pendingDelete: {
+      type: 'installment',
+      parcelaId: 'tv-123',
+      currentExpenseId: 'tv_1',
+      currentMonthKey: monthKeyOffset(0),
+      desc: 'TV (1/3x)',
+      group: 'CASA2024',
+      user: 'Ana',
+    },
+  });
+  assert.deepEqual(firebase.removals, []);
+});
+
+test('pending installment delete option 1 removes only the current installment', async () => {
+  const { firebase, getSession, service } = createStatefulService({
+    initialSession: {
+      group: 'CASA2024',
+      user: 'Ana',
+      pendingDelete: {
+        type: 'installment',
+        parcelaId: 'tv-123',
+        currentExpenseId: 'tv_1',
+        currentMonthKey: monthKeyOffset(0),
+        desc: 'TV (1/3x)',
+        group: 'CASA2024',
+        user: 'Ana',
+      },
+    },
+    seed: installmentExpenseSeed(),
+  });
+  const resposta = await service.processarMensagem('5511999999999', '1');
+
+  assert.match(resposta, /somente esta parcela/);
+  assert.deepEqual(getSession(), {
+    group: 'CASA2024',
+    user: 'Ana',
+  });
+  assert.deepEqual(firebase.removals, [
+    `grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(0)}/tv_1`,
+    `transactionsByUser/5511999999999/${monthKeyOffset(0)}/tv_1`,
+  ]);
+  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(0)}/tv_1`), undefined);
+  assert.deepEqual(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(1)}/tv_2`).parcelaId, 'tv-123');
+  assert.deepEqual(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(2)}/tv_3`).parcelaId, 'tv-123');
+});
+
+test('pending installment delete option 2 removes every installment with the same parcelaId', async () => {
+  const { firebase, getSession, service } = createStatefulService({
+    initialSession: {
+      group: 'CASA2024',
+      user: 'Ana',
+      pendingDelete: {
+        type: 'installment',
+        parcelaId: 'tv-123',
+        currentExpenseId: 'tv_1',
+        currentMonthKey: monthKeyOffset(0),
+        desc: 'TV (1/3x)',
+        group: 'CASA2024',
+        user: 'Ana',
+      },
+    },
+    seed: installmentExpenseSeed(),
+  });
+  const resposta = await service.processarMensagem('5511999999999', '2');
+
+  assert.match(resposta, /Apaguei 3 parcelas/);
+  assert.deepEqual(getSession(), {
+    group: 'CASA2024',
+    user: 'Ana',
+  });
+  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(0)}/tv_1`), undefined);
+  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(1)}/tv_2`), undefined);
+  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(2)}/tv_3`), undefined);
+  assert.equal(firebase.getValue(`transactionsByUser/5511999999999/${monthKeyOffset(0)}/tv_1`), undefined);
+  assert.equal(firebase.getValue(`transactionsByUser/5511999999999/${monthKeyOffset(1)}/tv_2`), undefined);
+  assert.equal(firebase.getValue(`transactionsByUser/5511999999999/${monthKeyOffset(2)}/tv_3`), undefined);
+  assert.deepEqual(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(0)}/tv_normal`), {
+    cat: 'Lazer',
+    createdAt: '2026-05-20T09:00:00.000Z',
+    date: todayIso(),
+    desc: 'TV',
+    value: 1200,
+  });
+  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(1)}/notebook_1`).parcelaId, 'note-456');
+});
+
+test('pending installment delete option 3 cancels without removing expenses', async () => {
+  const { firebase, getSession, service } = createStatefulService({
+    initialSession: {
+      group: 'CASA2024',
+      user: 'Ana',
+      pendingDelete: {
+        type: 'installment',
+        parcelaId: 'tv-123',
+        currentExpenseId: 'tv_1',
+        currentMonthKey: monthKeyOffset(0),
+        desc: 'TV (1/3x)',
+        group: 'CASA2024',
+        user: 'Ana',
+      },
+    },
+    seed: installmentExpenseSeed(),
+  });
+  const resposta = await service.processarMensagem('5511999999999', '3');
+
+  assert.equal(resposta, 'Exclusão cancelada. Nenhuma parcela foi apagada.');
+  assert.deepEqual(getSession(), {
+    group: 'CASA2024',
+    user: 'Ana',
+  });
+  assert.deepEqual(firebase.removals, []);
+  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(0)}/tv_1`).parcelaId, 'tv-123');
+});
+
+test('invalid pending installment delete response keeps pendingDelete active', async () => {
+  const pendingDelete = {
+    type: 'installment',
+    parcelaId: 'tv-123',
+    currentExpenseId: 'tv_1',
+    currentMonthKey: monthKeyOffset(0),
+    desc: 'TV (1/3x)',
+    group: 'CASA2024',
+    user: 'Ana',
+  };
+  const { firebase, getSession, savedSessions, service } = createStatefulService({
+    initialSession: {
+      group: 'CASA2024',
+      user: 'Ana',
+      pendingDelete,
+    },
+    seed: installmentExpenseSeed(),
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'talvez');
+
+  assert.equal(resposta, [
+    'Responda:',
+    '1 - Somente esta parcela',
+    '2 - Todas as parcelas deste parcelamento',
+    '3 - Cancelar',
+  ].join('\n'));
+  assert.deepEqual(getSession().pendingDelete, pendingDelete);
+  assert.deepEqual(savedSessions, []);
+  assert.deepEqual(firebase.removals, []);
+});
+
+test('apagar TV without parcelaId keeps the normal immediate delete behavior', async () => {
+  const { firebase, savedSessions, service } = createService({
+    seed: expenseSeed({
+      tv_normal: {
+        cat: 'Lazer',
+        createdAt: '2026-05-20T10:00:00.000Z',
+        desc: 'TV',
+        value: 1200,
+      },
+    }),
+    session: { group: 'CASA2024', user: 'Ana' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'apagar TV');
+
+  assert.match(resposta, /Apaguei/);
+  assert.match(resposta, /TV/);
+  assert.deepEqual(savedSessions, []);
+  assert.deepEqual(firebase.removals, [
+    `grupos/CASA2024/usuarios/Ana/gastos/${currentMonthKey()}/tv_normal`,
+  ]);
 });
 
 test('parcelamento writes one installment per month to the fake Firebase tree', async () => {
