@@ -3,10 +3,8 @@
 const crypto = require('node:crypto');
 const { getFirebaseOps } = require('../firebase-db');
 
-const SHARE_TAG_CODE_CHARSET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-const SHARE_TAG_RANDOM_ATTEMPTS = 5;
-const SITE_DEFAULT_GROUP = 'SALVAMONEY';
-const FIREBASE_INVALID_KEY_CHARS = /[.#$\[\]\/\x00-\x1F\x7F]/g;
+const DEFAULT_GROUP = 'SALVAMONEY';
+const ACCESS_TAG_ATTEMPTS = 30;
 
 function normalizePhone(phone) {
   return String(phone || '').replace(/\D/g, '');
@@ -24,49 +22,21 @@ function nonEmptyString(value) {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
-function normalizeSiteLoginTag(tag) {
-  return String(tag || '')
-    .trim()
-    .replace(/@/g, '')
-    .replace(/\s+/g, '')
-    .toLowerCase()
-    .replace(FIREBASE_INVALID_KEY_CHARS, '-');
+function normalizeAccessTag(tag) {
+  const cleanTag = String(tag || '').replace(/\D/g, '');
+
+  return /^\d{6}$/.test(cleanTag) ? cleanTag : '';
 }
 
-function getFirstName(name) {
-  const firstName = String(name || '')
-    .trim()
-    .split(/\s+/)[0] || 'USUARIO';
-
-  return firstName
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toUpperCase()
-    .replace(/[^A-Z0-9]/g, '') || 'USUARIO';
-}
-
-function codeFromBytes(bytes) {
-  return Array.from(bytes)
-    .slice(0, 6)
-    .map((byte) => SHARE_TAG_CODE_CHARSET[byte % SHARE_TAG_CODE_CHARSET.length])
-    .join('');
-}
-
-function randomCode(randomBytes) {
-  return codeFromBytes(randomBytes(6));
-}
-
-function deterministicCode(phone, createdAt) {
-  const hash = crypto.createHash('sha256').update(`${phone}:${createdAt}`).digest();
-
-  return codeFromBytes(hash);
+function randomAccessTag(randomInt) {
+  return String(randomInt(100000, 1000000));
 }
 
 function createUserService({
   db,
   firebaseOps,
   now = () => new Date().toISOString(),
-  randomBytes = crypto.randomBytes,
+  randomInt = crypto.randomInt,
 } = {}) {
   const { get, ref, set } = firebaseOps || getFirebaseOps();
 
@@ -82,60 +52,62 @@ function createUserService({
     return snap.val();
   }
 
-  async function shareTagExists(shareTag) {
-    const snap = await get(ref(db, `shareTags/${shareTag}`));
+  async function accessTagExists(tag) {
+    const cleanTag = normalizeAccessTag(tag);
 
-    return snap.exists();
+    if (!cleanTag) {
+      return false;
+    }
+
+    const [shareTagSnap, userSnap] = await Promise.all([
+      get(ref(db, `shareTags/${cleanTag}`)),
+      get(ref(db, `grupos/${DEFAULT_GROUP}/usuarios/${cleanTag}`)),
+    ]);
+
+    return shareTagSnap.exists() || userSnap.exists();
   }
 
-  async function createShareTag(phone, name, createdAt) {
-    const prefix = getFirstName(name);
+  async function generateAccessTag() {
+    for (let attempt = 0; attempt < ACCESS_TAG_ATTEMPTS; attempt++) {
+      const tag = randomAccessTag(randomInt);
 
-    for (let attempt = 0; attempt < SHARE_TAG_RANDOM_ATTEMPTS; attempt++) {
-      const shareTag = `${prefix}-${randomCode(randomBytes)}`;
-
-      if (!(await shareTagExists(shareTag))) {
-        return shareTag;
+      if (!(await accessTagExists(tag))) {
+        return tag;
       }
     }
 
-    const fallbackShareTag = `${prefix}-${deterministicCode(phone, createdAt)}`;
-    const snap = await get(ref(db, `shareTags/${fallbackShareTag}`));
-
-    if (snap.exists() && snap.val()?.phone !== phone) {
-      throw new Error('Não foi possível gerar uma shareTag única.');
-    }
-
-    return fallbackShareTag;
+    throw new Error('Não foi possível gerar uma tag de acesso agora.');
   }
 
-  async function saveShareTagIndex(shareTag, phone) {
-    await set(ref(db, `shareTags/${shareTag}`), { phone });
+  async function saveShareTagIndex(tag, phone) {
+    await set(ref(db, `shareTags/${tag}`), { phone });
   }
 
   async function ensureSiteUserRecord(user) {
-    const tag = normalizeSiteLoginTag(user.shareTag);
+    const tag = normalizeAccessTag(user.tag || user.shareTag);
 
     if (!tag) {
       return null;
     }
 
-    const siteUserPath = `grupos/${SITE_DEFAULT_GROUP}/usuarios/${tag}`;
+    const siteUserPath = `grupos/${DEFAULT_GROUP}/usuarios/${tag}`;
     const snap = await get(ref(db, siteUserPath));
     const existing = snap.val() || {};
     const createdAt = existing.createdAt || user.createdAt || now();
+    const name = user.name || user.nome || existing.nome || '';
+    const phone = user.phone || existing.phone || '';
 
-    await set(ref(db, `${siteUserPath}/nome`), user.name || '');
+    await set(ref(db, `${siteUserPath}/nome`), name);
     await set(ref(db, `${siteUserPath}/tag`), tag);
-    await set(ref(db, `${siteUserPath}/phone`), user.phone || '');
+    await set(ref(db, `${siteUserPath}/phone`), phone);
     await set(ref(db, `${siteUserPath}/origem`), existing.origem || 'bot');
     await set(ref(db, `${siteUserPath}/createdAt`), createdAt);
 
     return {
       ...existing,
-      nome: user.name || '',
+      nome: name,
       tag,
-      phone: user.phone || '',
+      phone,
       origem: existing.origem || 'bot',
       createdAt,
     };
@@ -156,18 +128,19 @@ function createUserService({
     if (!existingUser) {
       const name = nonEmptyString(data.name) ? data.name.trim() : '';
       const email = nonEmptyString(data.email) ? normalizeEmail(data.email) : '';
-      const shareTag = await createShareTag(cleanPhone, name, timestamp);
+      const tag = await generateAccessTag();
       const user = {
         phone: cleanPhone,
         name,
         email,
-        shareTag,
+        tag,
+        shareTag: tag,
         createdAt: timestamp,
         updatedAt: timestamp,
       };
 
       await set(userRef, user);
-      await saveShareTagIndex(shareTag, cleanPhone);
+      await saveShareTagIndex(tag, cleanPhone);
       await ensureSiteUserRecord(user);
 
       return user;
@@ -187,9 +160,16 @@ function createUserService({
       user.email = normalizeEmail(data.email);
     }
 
-    if (!user.shareTag) {
-      user.shareTag = await createShareTag(cleanPhone, user.name, existingUser.createdAt || timestamp);
-      await saveShareTagIndex(user.shareTag, cleanPhone);
+    const existingTag = normalizeAccessTag(user.tag || user.shareTag);
+
+    if (!existingTag) {
+      user.tag = await generateAccessTag();
+      user.shareTag = user.tag;
+      await saveShareTagIndex(user.tag, cleanPhone);
+    } else {
+      user.tag = existingTag;
+      user.shareTag = existingTag;
+      await saveShareTagIndex(existingTag, cleanPhone);
     }
 
     await set(userRef, user);
@@ -199,23 +179,50 @@ function createUserService({
   }
 
   async function getUserByShareTag(shareTag) {
-    const cleanShareTag = String(shareTag || '').trim().toUpperCase();
+    return await getUserByAccessTag(shareTag);
+  }
 
-    if (!cleanShareTag) {
+  async function getUserByAccessTag(tag) {
+    const cleanTag = normalizeAccessTag(tag);
+
+    if (!cleanTag) {
       return null;
     }
 
-    const tagSnap = await get(ref(db, `shareTags/${cleanShareTag}`));
+    const tagSnap = await get(ref(db, `shareTags/${cleanTag}`));
     const phone = tagSnap.val()?.phone;
 
-    if (!phone) {
+    if (phone) {
+      const user = await getUserByPhone(phone);
+
+      if (user) {
+        return {
+          ...user,
+          tag: normalizeAccessTag(user.tag || user.shareTag) || cleanTag,
+          shareTag: normalizeAccessTag(user.tag || user.shareTag) || cleanTag,
+        };
+      }
+    }
+
+    const userSnap = await get(ref(db, `grupos/${DEFAULT_GROUP}/usuarios/${cleanTag}`));
+    const siteUser = userSnap.val();
+
+    if (!siteUser) {
       return null;
     }
 
-    return await getUserByPhone(phone);
+    return {
+      phone: siteUser.phone || '',
+      name: siteUser.nome || siteUser.name || '',
+      tag: cleanTag,
+      shareTag: cleanTag,
+      createdAt: siteUser.createdAt || '',
+    };
   }
 
   return {
+    generateAccessTag,
+    getUserByAccessTag,
     getOrCreateUserByPhone,
     getUserByPhone,
     getUserByShareTag,
@@ -223,10 +230,9 @@ function createUserService({
 }
 
 module.exports = {
-  SHARE_TAG_CODE_CHARSET,
-  SITE_DEFAULT_GROUP,
+  DEFAULT_GROUP,
   createUserService,
+  normalizeAccessTag,
   isValidEmail,
   normalizeEmail,
-  normalizeSiteLoginTag,
 };

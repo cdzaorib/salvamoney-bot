@@ -3,22 +3,32 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
-  SHARE_TAG_CODE_CHARSET,
+  DEFAULT_GROUP,
   createUserService,
   isValidEmail,
+  normalizeAccessTag,
   normalizeEmail,
-  normalizeSiteLoginTag,
 } = require('../src/services/user-service');
 const { createFakeFirebase } = require('./helpers/fake-firebase');
 
-function createService({ seed = {}, now = () => '2026-05-25T12:00:00.000Z', randomBytes } = {}) {
+function createRandomIntSequence(values) {
+  let index = 0;
+
+  return () => values[index++] || values[values.length - 1];
+}
+
+function createService({
+  seed = {},
+  now = () => '2026-05-25T12:00:00.000Z',
+  randomInt = createRandomIntSequence([482913]),
+} = {}) {
   const firebase = createFakeFirebase(seed);
 
   const service = createUserService({
     db: {},
     firebaseOps: firebase.ops,
     now,
-    randomBytes: randomBytes || (() => Buffer.from([0, 1, 2, 3, 4, 5])),
+    randomInt,
   });
 
   return {
@@ -45,8 +55,16 @@ test('isValidEmail rejects invalid email formats', () => {
   assert.equal(isValidEmail('ana example@example.com'), false);
 });
 
-test('getOrCreateUserByPhone creates a user with a unique shareTag format and allowed charset', async () => {
-  const { firebase, service } = createService();
+test('normalizeAccessTag keeps exactly six digits after removing non-numeric chars', () => {
+  assert.equal(normalizeAccessTag('482913'), '482913');
+  assert.equal(normalizeAccessTag(' 482 913 '), '482913');
+  assert.equal(normalizeAccessTag('@482-913'), '482913');
+  assert.equal(normalizeAccessTag('48291'), '');
+  assert.equal(normalizeAccessTag('4829137'), '');
+});
+
+test('getOrCreateUserByPhone creates a user with a six digit access tag', async () => {
+  const { service } = createService();
 
   const user = await service.getOrCreateUserByPhone('55 (11) 99999-9999', {
     name: 'João Silva',
@@ -57,16 +75,35 @@ test('getOrCreateUserByPhone creates a user with a unique shareTag format and al
     phone: '5511999999999',
     name: 'João Silva',
     email: 'joao@example.com',
-    shareTag: 'JOAO-ABCDEF',
+    tag: '482913',
+    shareTag: '482913',
     createdAt: '2026-05-25T12:00:00.000Z',
     updatedAt: '2026-05-25T12:00:00.000Z',
   });
-  assert.match(user.shareTag, /^[A-Z0-9]+-[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{6}$/);
+});
 
-  const code = user.shareTag.split('-')[1];
+test('generateAccessTag skips tags that already exist in shareTags or SALVAMONEY users', async () => {
+  const { service } = createService({
+    randomInt: createRandomIntSequence([111111, 222222, 333333]),
+    seed: {
+      shareTags: {
+        111111: {
+          phone: '5511888888888',
+        },
+      },
+      grupos: {
+        [DEFAULT_GROUP]: {
+          usuarios: {
+            222222: {
+              nome: 'Outra pessoa',
+            },
+          },
+        },
+      },
+    },
+  });
 
-  assert.equal([...code].every((char) => SHARE_TAG_CODE_CHARSET.includes(char)), true);
-  assert.equal(/[IO01]/.test(code), false);
+  assert.equal(await service.generateAccessTag(), '333333');
 });
 
 test('getOrCreateUserByPhone creates the site login record for the generated tag', async () => {
@@ -77,50 +114,17 @@ test('getOrCreateUserByPhone creates the site login record for the generated tag
     email: 'joao@example.com',
   });
 
-  assert.equal(user.shareTag, 'JOAO-ABCDEF');
-  assert.deepEqual(firebase.getValue('grupos/SALVAMONEY/usuarios/joao-abcdef'), {
+  assert.equal(user.tag, '482913');
+  assert.deepEqual(firebase.getValue('grupos/SALVAMONEY/usuarios/482913'), {
     nome: 'João Silva',
-    tag: 'joao-abcdef',
+    tag: '482913',
     phone: '5511999999999',
     origem: 'bot',
     createdAt: '2026-05-25T12:00:00.000Z',
   });
 });
 
-test('normalizeSiteLoginTag removes @ and spaces, lowercases, and makes a Firebase key', () => {
-  assert.equal(normalizeSiteLoginTag('@Tag'), 'tag');
-  assert.equal(normalizeSiteLoginTag(' @Ta g '), 'tag');
-  assert.equal(normalizeSiteLoginTag('@Ana.Silva#/[]'), 'ana-silva----');
-});
-
-test('site login record uses the normalized existing tag', async () => {
-  const { firebase, service } = createService({
-    seed: {
-      users: {
-        5511999999999: {
-          phone: '5511999999999',
-          name: 'Ana',
-          email: 'ana@example.com',
-          shareTag: '@Tag',
-          createdAt: '2026-01-01T00:00:00.000Z',
-          updatedAt: '2026-01-01T00:00:00.000Z',
-        },
-      },
-    },
-  });
-
-  await service.getOrCreateUserByPhone('5511999999999');
-
-  assert.deepEqual(firebase.getValue('grupos/SALVAMONEY/usuarios/tag'), {
-    nome: 'Ana',
-    tag: 'tag',
-    phone: '5511999999999',
-    origem: 'bot',
-    createdAt: '2026-01-01T00:00:00.000Z',
-  });
-});
-
-test('site login validation can find the normalized tag under SALVAMONEY', async () => {
+test('site login validation can find the numeric tag under SALVAMONEY', async () => {
   const { firebase, service } = createService();
 
   await service.getOrCreateUserByPhone('5511999999999', {
@@ -128,10 +132,10 @@ test('site login validation can find the normalized tag under SALVAMONEY', async
     email: 'ana@example.com',
   });
 
-  const snap = await firebase.ops.get('grupos/SALVAMONEY/usuarios/ana-abcdef');
+  const snap = await firebase.ops.get('grupos/SALVAMONEY/usuarios/482913');
 
   assert.equal(snap.exists(), true);
-  assert.equal(snap.val().tag, 'ana-abcdef');
+  assert.equal(snap.val().tag, '482913');
 });
 
 test('site login record does not overwrite existing financial data', async () => {
@@ -142,7 +146,8 @@ test('site login record does not overwrite existing financial data', async () =>
           phone: '5511999999999',
           name: 'Ana',
           email: 'ana@example.com',
-          shareTag: 'ANA-ABCDEF',
+          tag: '482913',
+          shareTag: '482913',
           createdAt: '2026-01-01T00:00:00.000Z',
           updatedAt: '2026-01-01T00:00:00.000Z',
         },
@@ -150,7 +155,7 @@ test('site login record does not overwrite existing financial data', async () =>
       grupos: {
         SALVAMONEY: {
           usuarios: {
-            'ana-abcdef': {
+            482913: {
               gastos: {
                 '2026_4': {
                   gasto_1: {
@@ -174,7 +179,7 @@ test('site login record does not overwrite existing financial data', async () =>
 
   await service.getOrCreateUserByPhone('5511999999999');
 
-  assert.deepEqual(firebase.getValue('grupos/SALVAMONEY/usuarios/ana-abcdef/gastos'), {
+  assert.deepEqual(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/gastos'), {
     '2026_4': {
       gasto_1: {
         desc: 'Mercado',
@@ -182,13 +187,13 @@ test('site login record does not overwrite existing financial data', async () =>
       },
     },
   });
-  assert.deepEqual(firebase.getValue('grupos/SALVAMONEY/usuarios/ana-abcdef/fixos'), {
+  assert.deepEqual(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/fixos'), {
     fixo_1: {
       desc: 'Internet',
       value: 100,
     },
   });
-  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/ana-abcdef/tag'), 'ana-abcdef');
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/tag'), '482913');
 });
 
 test('shareTags index contains only the phone field', async () => {
@@ -199,29 +204,30 @@ test('shareTags index contains only the phone field', async () => {
     email: 'anna@example.com',
   });
 
-  assert.deepEqual(firebase.getValue(`shareTags/${user.shareTag}`), {
+  assert.deepEqual(firebase.getValue(`shareTags/${user.tag}`), {
     phone: '5511999999999',
   });
 });
 
-test('getOrCreateUserByPhone preserves existing shareTag and createdAt', async () => {
+test('getOrCreateUserByPhone preserves existing numeric tag and createdAt', async () => {
   const { firebase, service } = createService({
+    randomInt: () => {
+      throw new Error('tag should not be regenerated');
+    },
     seed: {
       users: {
         5511999999999: {
           phone: '5511999999999',
           name: 'Ana',
           email: 'ana@example.com',
-          shareTag: 'ANA-234567',
+          tag: '482913',
+          shareTag: '482913',
           createdAt: '2026-01-01T00:00:00.000Z',
           updatedAt: '2026-01-01T00:00:00.000Z',
         },
       },
     },
     now: () => '2026-05-25T12:00:00.000Z',
-    randomBytes: () => {
-      throw new Error('shareTag should not be regenerated');
-    },
   });
 
   const user = await service.getOrCreateUserByPhone('5511999999999', {
@@ -229,12 +235,34 @@ test('getOrCreateUserByPhone preserves existing shareTag and createdAt', async (
     email: 'ANA.MARIA@EXAMPLE.COM',
   });
 
-  assert.equal(user.shareTag, 'ANA-234567');
+  assert.equal(user.tag, '482913');
   assert.equal(user.createdAt, '2026-01-01T00:00:00.000Z');
   assert.equal(user.updatedAt, '2026-05-25T12:00:00.000Z');
   assert.equal(user.name, 'Ana Maria');
   assert.equal(user.email, 'ana.maria@example.com');
-  assert.deepEqual(firebase.getValue('shareTags/ANA-234567'), undefined);
+  assert.deepEqual(firebase.getValue('shareTags/482913'), { phone: '5511999999999' });
+});
+
+test('getOrCreateUserByPhone replaces legacy non-numeric shareTag with a numeric tag', async () => {
+  const { service } = createService({
+    seed: {
+      users: {
+        5511999999999: {
+          phone: '5511999999999',
+          name: 'Carlos',
+          email: 'carlos@example.com',
+          shareTag: 'CARLOS-ABCDEF',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-01T00:00:00.000Z',
+        },
+      },
+    },
+  });
+
+  const user = await service.getOrCreateUserByPhone('5511999999999');
+
+  assert.equal(user.tag, '482913');
+  assert.equal(user.shareTag, '482913');
 });
 
 test('getOrCreateUserByPhone ignores undefined and empty name or email updates', async () => {
@@ -245,7 +273,8 @@ test('getOrCreateUserByPhone ignores undefined and empty name or email updates',
           phone: '5511999999999',
           name: 'Carlos',
           email: 'carlos@example.com',
-          shareTag: 'CARLOS-234567',
+          tag: '482913',
+          shareTag: '482913',
           createdAt: '2026-01-01T00:00:00.000Z',
           updatedAt: '2026-01-01T00:00:00.000Z',
         },
@@ -267,10 +296,10 @@ test('getOrCreateUserByPhone ignores undefined and empty name or email updates',
   assert.equal(sameUser.email, 'carlos@example.com');
 });
 
-test('getUserByShareTag reads shareTags first and then users by phone', async () => {
+test('getUserByAccessTag reads shareTags first and then users by phone', async () => {
   const firebase = createFakeFirebase({
     shareTags: {
-      'ANA-ABCDEF': {
+      482913: {
         phone: '5511999999999',
       },
     },
@@ -279,7 +308,8 @@ test('getUserByShareTag reads shareTags first and then users by phone', async ()
         phone: '5511999999999',
         name: 'Ana',
         email: 'ana@example.com',
-        shareTag: 'ANA-ABCDEF',
+        tag: '482913',
+        shareTag: '482913',
         createdAt: '2026-01-01T00:00:00.000Z',
         updatedAt: '2026-01-01T00:00:00.000Z',
       },
@@ -297,11 +327,11 @@ test('getUserByShareTag reads shareTags first and then users by phone', async ()
     },
   });
 
-  const user = await service.getUserByShareTag('ana-abcdef');
+  const user = await service.getUserByAccessTag('482 913');
 
   assert.equal(user.phone, '5511999999999');
   assert.deepEqual(getPaths, [
-    'shareTags/ANA-ABCDEF',
+    'shareTags/482913',
     'users/5511999999999',
   ]);
 });

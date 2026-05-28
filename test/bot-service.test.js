@@ -70,9 +70,9 @@ function todayIso() {
 function expenseSeed(expenses = {}) {
   return {
     grupos: {
-      CASA2024: {
+      SALVAMONEY: {
         usuarios: {
-          Ana: {
+          482913: {
             gastos: {
               [currentMonthKey()]: expenses,
             },
@@ -122,9 +122,9 @@ function deleteSelectionSeed() {
 function installmentDeleteSeed() {
   return {
     grupos: {
-      CASA2024: {
+      SALVAMONEY: {
         usuarios: {
-          Ana: {
+          482913: {
             gastos: {
               [monthKeyOffset(0)]: {
                 tv_1: {
@@ -241,9 +241,9 @@ function installmentDeleteSeed() {
 function fixedExpenseSeed() {
   return {
     grupos: {
-      CASA2024: {
+      SALVAMONEY: {
         usuarios: {
-          Ana: {
+          482913: {
             fixos: {
               fixo_internet: {
                 cat: 'Moradia',
@@ -356,15 +356,7 @@ function createStatefulService({
 }
 
 function firstNameTag(name) {
-  const firstName = String(name || '')
-    .trim()
-    .split(/\s+/)[0]
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toUpperCase()
-    .replace(/[^A-Z0-9]/g, '') || 'USUARIO';
-
-  return `${firstName}-8K2P7Q`;
+  return '482913';
 }
 
 function createSignupUserService(initialUsers = {}) {
@@ -391,6 +383,7 @@ function createSignupUserService(initialUsers = {}) {
         phone,
         name: data.name,
         email: data.email,
+        tag: firstNameTag(data.name),
         shareTag: firstNameTag(data.name),
       };
 
@@ -402,7 +395,14 @@ function createSignupUserService(initialUsers = {}) {
       calls.push({ method: 'getUserByShareTag', shareTag });
 
       return Array.from(users.values()).find(
-        (user) => String(user.shareTag || '').toUpperCase() === shareTag
+        (user) => String(user.shareTag || '') === shareTag
+      ) || null;
+    },
+    async getUserByAccessTag(tag) {
+      calls.push({ method: 'getUserByAccessTag', tag });
+
+      return Array.from(users.values()).find(
+        (user) => String(user.tag || user.shareTag || '') === tag
       ) || null;
     },
   };
@@ -428,47 +428,84 @@ test('oi returns help without external services', async () => {
   assert.match(resposta, /Você ainda não vinculou uma conta/);
 });
 
-test('criar codigo without name returns current instructions', async () => {
+test('criar codigo without name returns tag-only instructions', async () => {
   const { service } = createService();
   const resposta = await service.processarMensagem('5511999999999', 'criar codigo');
 
-  assert.match(resposta, /Criar código do SalvaMoney/);
-  assert.match(resposta, /criar código SEU NOME/);
+  assert.equal(resposta, 'Agora o SalvaMoney usa apenas sua tag de 6 dígitos. Use: criar conta SeuNome ou entrar 123456.');
 });
 
-test('entrar links an account without a previous session', async () => {
+test('entrar with legacy name and group returns tag-only instructions', async () => {
   const { savedSessions, service } = createService({
     seed: expenseSeed(),
   });
-  const resposta = await service.processarMensagem('5511999999999', 'entrar Ana CASA2024');
+  const resposta = await service.processarMensagem('5511999999999', 'entrar Ana SALVAMONEY');
 
-  assert.match(resposta, /Pronto!/);
+  assert.equal(resposta, 'Agora o SalvaMoney usa apenas sua tag de 6 dígitos. Use: criar conta SeuNome ou entrar 123456.');
+  assert.deepEqual(savedSessions, []);
+});
+
+test('trocar conta returns tag-only instructions', async () => {
+  const { savedSessions, service } = createService({
+    seed: expenseSeed(),
+    session: { group: 'SALVAMONEY', user: 'Carlos' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'trocar conta Ana SALVAMONEY');
+
+  assert.equal(resposta, 'Agora o SalvaMoney usa apenas sua tag de 6 dígitos. Use: criar conta SeuNome ou entrar 123456.');
+  assert.deepEqual(savedSessions, []);
+});
+
+test('entrar 123456 links the phone to the access tag', async () => {
+  const { savedSessions, service } = createService({
+    seed: {
+      grupos: {
+        SALVAMONEY: {
+          usuarios: {
+            482913: {
+              nome: 'Anna',
+              tag: '482913',
+              phone: '5511999999999',
+            },
+          },
+        },
+      },
+      shareTags: {
+        482913: {
+          phone: '5511999999999',
+        },
+      },
+      users: {
+        5511999999999: {
+          phone: '5511999999999',
+          name: 'Anna',
+          tag: '482913',
+          shareTag: '482913',
+        },
+      },
+    },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'entrar 482913');
+
+  assert.match(resposta, /Pronto/);
   assert.deepEqual(savedSessions, [{
     phone: '5511999999999',
     data: {
-      user: 'Ana',
-      group: 'CASA2024',
+      group: 'SALVAMONEY',
+      user: '482913',
+      name: 'Anna',
+      tag: '482913',
       updatedAt: todayIso(),
     },
   }]);
 });
 
-test('trocar conta links the phone to the requested account', async () => {
-  const { savedSessions, service } = createService({
-    seed: expenseSeed(),
-    session: { group: 'CASA2024', user: 'Carlos' },
-  });
-  const resposta = await service.processarMensagem('5511999999999', 'trocar conta Ana CASA2024');
+test('entrar with missing tag asks to create an account', async () => {
+  const { savedSessions, service } = createService();
+  const resposta = await service.processarMensagem('5511999999999', 'entrar 999999');
 
-  assert.match(resposta, /Conta trocada/);
-  assert.deepEqual(savedSessions, [{
-    phone: '5511999999999',
-    data: {
-      user: 'Ana',
-      group: 'CASA2024',
-      updatedAt: todayIso(),
-    },
-  }]);
+  assert.equal(resposta, 'Tag não encontrada. Crie sua conta pelo WhatsApp usando: criar conta SeuNome');
+  assert.deepEqual(savedSessions, []);
 });
 
 test('criar conta starts the WhatsApp signup flow', async () => {
@@ -490,7 +527,7 @@ test('criar conta starts the WhatsApp signup flow', async () => {
   }]);
 });
 
-test('signup flow stores the name temporarily before asking for email', async () => {
+test('signup flow creates the user after receiving the name', async () => {
   const userService = createSignupUserService();
   const { savedSessions, service } = createService({
     session: { signupStep: 'signup_ask_name' },
@@ -498,13 +535,21 @@ test('signup flow stores the name temporarily before asking for email', async ()
   });
   const resposta = await service.processarMensagem('5511999999999', 'Anna');
 
-  assert.equal(resposta, 'Agora me envie seu e-mail.');
+  assert.equal(resposta, [
+    'Conta criada, Anna!',
+    '',
+    'Sua tag de acesso é: 482913',
+    '',
+    'Use essa tag para entrar no site e no WhatsApp.',
+  ].join('\n'));
   assert.deepEqual(savedSessions, [{
     phone: '5511999999999',
     data: {
-      signupStep: 'signup_ask_email',
-      pendingName: 'Anna',
-      pendingEmail: null,
+      group: 'SALVAMONEY',
+      user: '482913',
+      name: 'Anna',
+      tag: '482913',
+      updatedAt: todayIso(),
     },
   }]);
 });
@@ -571,11 +616,11 @@ test('signup flow creates the user when confirmation is accepted', async () => {
   const resposta = await service.processarMensagem('5511999999999', '1');
 
   assert.equal(resposta, [
-    'Seja bem-vinda, Anna!',
+    'Conta criada, Anna!',
     '',
-    'Sua tag no SalvaMoney é: ANNA-8K2P7Q',
+    'Sua tag de acesso é: 482913',
     '',
-    'Compartilhe essa tag com outras pessoas para dividir gastos e organizar contas.',
+    'Use essa tag para entrar no site e no WhatsApp.',
   ].join('\n'));
   assert.deepEqual(userService.calls, [{
     method: 'getOrCreateUserByPhone',
@@ -595,11 +640,11 @@ test('signup cancellation clears only temporary signup fields', async () => {
   const userService = createSignupUserService();
   const { savedSessions, service } = createService({
     session: {
-      group: 'CASA2024',
+      group: 'SALVAMONEY',
       pendingEmail: null,
       pendingName: 'Anna',
       signupStep: 'signup_ask_email',
-      user: 'Ana',
+      user: '482913',
     },
     userService,
   });
@@ -609,8 +654,8 @@ test('signup cancellation clears only temporary signup fields', async () => {
   assert.deepEqual(savedSessions, [{
     phone: '5511999999999',
     data: {
-      group: 'CASA2024',
-      user: 'Ana',
+      group: 'SALVAMONEY',
+      user: '482913',
     },
   }]);
 });
@@ -619,9 +664,9 @@ test('sair da conta logs out from the current session and preserves persisted re
   const { firebase, savedSessions, service } = createService({
     seed: {
       grupos: {
-        CASA2024: {
+        SALVAMONEY: {
           usuarios: {
-            Ana: {
+            482913: {
               gastos: {
                 [currentMonthKey()]: {
                   gasto_1: {
@@ -636,7 +681,7 @@ test('sair da conta logs out from the current session and preserves persisted re
         },
       },
       shareTags: {
-        'ANNA-8K2P7Q': {
+        '482913': {
           phone: '5511999999999',
         },
       },
@@ -645,17 +690,17 @@ test('sair da conta logs out from the current session and preserves persisted re
           phone: '5511999999999',
           name: 'Anna',
           email: 'anna@email.com',
-          shareTag: 'ANNA-8K2P7Q',
+          shareTag: '482913',
         },
       },
     },
     session: {
-      group: 'CASA2024',
+      group: 'SALVAMONEY',
       lastSeen: '2026-05-25',
       pendingEmail: 'anna@email.com',
       pendingName: 'Anna',
       signupStep: 'signup_confirm',
-      user: 'Ana',
+      user: '482913',
     },
   });
   const resposta = await service.processarMensagem('5511999999999', 'sair da conta');
@@ -666,7 +711,7 @@ test('sair da conta logs out from the current session and preserves persisted re
     'Seu cadastro, sua tag e seus gastos foram preservados.',
     '',
     'Para entrar novamente, envie:',
-    'entrar SEU_NOME SEU_GRUPO',
+    'entrar 123456',
   ].join('\n'));
   assert.deepEqual(savedSessions, [{
     phone: '5511999999999',
@@ -679,12 +724,12 @@ test('sair da conta logs out from the current session and preserves persisted re
     phone: '5511999999999',
     name: 'Anna',
     email: 'anna@email.com',
-    shareTag: 'ANNA-8K2P7Q',
+    shareTag: '482913',
   });
-  assert.deepEqual(firebase.getValue('shareTags/ANNA-8K2P7Q'), {
+  assert.deepEqual(firebase.getValue('shareTags/482913'), {
     phone: '5511999999999',
   });
-  assert.deepEqual(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${currentMonthKey()}/gasto_1`), {
+  assert.deepEqual(firebase.getValue(`grupos/SALVAMONEY/usuarios/482913/gastos/${currentMonthKey()}/gasto_1`), {
     cat: 'Transporte',
     desc: 'uber',
     value: 35,
@@ -723,7 +768,7 @@ test('criar conta for an existing user does not create a new shareTag', async ()
       phone: '5511999999999',
       name: 'Anna',
       email: 'anna@email.com',
-      shareTag: 'ANNA-8K2P7Q',
+      shareTag: '482913',
     },
   });
   const { savedSessions, service } = createService({ userService });
@@ -731,13 +776,17 @@ test('criar conta for an existing user does not create a new shareTag', async ()
 
   assert.match(resposta, /Você já possui uma conta no SalvaMoney/);
   assert.match(resposta, /Nome: Anna/);
-  assert.match(resposta, /E-mail: anna@email.com/);
-  assert.match(resposta, /Sua tag: ANNA-8K2P7Q/);
-  assert.deepEqual(userService.calls, [{
-    method: 'getUserByPhone',
+  assert.match(resposta, /Sua tag de acesso é: 482913/);
+  assert.deepEqual(savedSessions, [{
     phone: '5511999999999',
+    data: {
+      group: 'SALVAMONEY',
+      user: '482913',
+      name: 'Anna',
+      tag: '482913',
+      updatedAt: todayIso(),
+    },
   }]);
-  assert.deepEqual(savedSessions, []);
 });
 
 test('minha tag returns the existing public shareTag', async () => {
@@ -746,25 +795,17 @@ test('minha tag returns the existing public shareTag', async () => {
       phone: '5511999999999',
       name: 'Anna',
       email: 'anna@email.com',
-      shareTag: 'ANNA-8K2P7Q',
+      shareTag: '482913',
     },
   });
   const { firebase, service } = createService({
     seed: expenseSeed(),
-    session: { group: 'CASA2024', user: 'Ana' },
+    session: { group: 'SALVAMONEY', user: '482913' },
     userService,
   });
   const resposta = await service.processarMensagem('5511999999999', 'minha tag');
 
-  assert.equal(resposta, [
-    'Sua tag no SalvaMoney é: ANNA-8K2P7Q',
-    '',
-    'Compartilhe essa tag com outras pessoas para dividir gastos e organizar contas.',
-  ].join('\n'));
-  assert.deepEqual(userService.calls, [{
-    method: 'getUserByPhone',
-    phone: '5511999999999',
-  }]);
+  assert.equal(resposta, 'Sua tag de acesso é: 482913');
   assert.equal(firebase.pushes.length, 0);
 });
 
@@ -774,31 +815,24 @@ test('natural minha tag phrases return users phone shareTag and never session us
       phone: '5511999999999',
       name: 'Anna',
       email: 'anna@email.com',
-      shareTag: 'ANNA-8K2P7Q',
+      shareTag: '482913',
     },
   });
   const { firebase, service } = createService({
     seed: expenseSeed(),
-    session: { group: 'CASA2024', user: 'carlos' },
+    session: { group: 'SALVAMONEY', user: 'carlos' },
     userService,
   });
 
   for (const phrase of MINHA_TAG_PHRASES) {
     const resposta = await service.processarMensagem('5511999999999', phrase);
 
-    assert.equal(resposta, [
-      'Sua tag no SalvaMoney é: ANNA-8K2P7Q',
-      '',
-      'Compartilhe essa tag com outras pessoas para dividir gastos e organizar contas.',
-    ].join('\n'), phrase);
+    assert.equal(resposta, 'Sua tag de acesso é: 482913', phrase);
     assert.doesNotMatch(resposta, /carlos/i, phrase);
   }
 
   assert.equal(firebase.pushes.length, 0);
-  assert.deepEqual(userService.calls, MINHA_TAG_PHRASES.map(() => ({
-    method: 'getUserByPhone',
-    phone: '5511999999999',
-  })));
+  assert.equal(userService.calls.filter((call) => call.method === 'getUserByPhone').length, MINHA_TAG_PHRASES.length);
 });
 
 test('minha tag without user asks to create an account', async () => {
@@ -827,7 +861,7 @@ test('natural minha tag phrase without user asks to create an account', async ()
   const userService = createSignupUserService();
   const { firebase, savedSessions, service } = createService({
     seed: expenseSeed(),
-    session: { group: 'CASA2024', user: 'carlos' },
+    session: { group: 'SALVAMONEY', user: 'carlos' },
     userService,
   });
   const resposta = await service.processarMensagem('5511999999999', 'qual minha tag');
@@ -853,12 +887,12 @@ test('meu perfil returns the existing user profile', async () => {
       phone: '5511999999999',
       name: 'Anna',
       email: 'anna@email.com',
-      shareTag: 'ANNA-8K2P7Q',
+      shareTag: '482913',
     },
   });
   const { firebase, service } = createService({
     seed: expenseSeed(),
-    session: { group: 'CASA2024', user: 'Ana' },
+    session: { group: 'SALVAMONEY', user: '482913' },
     userService,
   });
   const resposta = await service.processarMensagem('5511999999999', 'meu perfil');
@@ -868,11 +902,18 @@ test('meu perfil returns the existing user profile', async () => {
     '',
     'Nome: Anna',
     'E-mail: anna@email.com',
-    'Tag: ANNA-8K2P7Q',
+    'Tag: 482913',
   ].join('\n'));
   assert.deepEqual(userService.calls, [{
     method: 'getUserByPhone',
     phone: '5511999999999',
+  }, {
+    method: 'getOrCreateUserByPhone',
+    phone: '5511999999999',
+    data: {
+      email: 'anna@email.com',
+      name: 'Anna',
+    },
   }]);
   assert.equal(firebase.pushes.length, 0);
 });
@@ -905,12 +946,12 @@ test('profile lookup commands do not register expenses', async () => {
       phone: '5511999999999',
       name: 'Anna',
       email: 'anna@email.com',
-      shareTag: 'ANNA-8K2P7Q',
+      shareTag: '482913',
     },
   });
   const { firebase, service } = createService({
     seed: expenseSeed(),
-    session: { group: 'CASA2024', user: 'Ana' },
+    session: { group: 'SALVAMONEY', user: '482913' },
     userService,
   });
 
@@ -926,25 +967,25 @@ test('buscar tag returns a public user match without exposing phone or email', a
       phone: '5511999999999',
       name: 'Anna',
       email: 'anna@email.com',
-      shareTag: 'ANNA-8K2P7Q',
+      shareTag: '482913',
     },
   });
   const { firebase, service } = createService({
     seed: expenseSeed(),
-    session: { group: 'CASA2024', user: 'Ana' },
+    session: { group: 'SALVAMONEY', user: '482913' },
     userService,
   });
-  const resposta = await service.processarMensagem('5511888888888', 'buscar tag anna-8k2p7q');
+  const resposta = await service.processarMensagem('5511888888888', 'buscar tag 482913');
 
   assert.equal(resposta, [
     'Encontrei:',
     '',
     'Nome: Anna',
-    'Tag: ANNA-8K2P7Q',
+    'Tag: 482913',
   ].join('\n'));
   assert.deepEqual(userService.calls, [{
     method: 'getUserByShareTag',
-    shareTag: 'ANNA-8K2P7Q',
+    shareTag: '482913',
   }]);
   assert.doesNotMatch(resposta, /5511999999999/);
   assert.doesNotMatch(resposta, /anna@email\.com/);
@@ -955,10 +996,10 @@ test('buscar tag returns not found when shareTag does not exist', async () => {
   const userService = createSignupUserService();
   const { firebase, service } = createService({
     seed: expenseSeed(),
-    session: { group: 'CASA2024', user: 'Ana' },
+    session: { group: 'SALVAMONEY', user: '482913' },
     userService,
   });
-  const resposta = await service.processarMensagem('5511888888888', 'buscar tag NAO-8K2P7Q');
+  const resposta = await service.processarMensagem('5511888888888', 'buscar tag 999999');
 
   assert.equal(resposta, [
     'Não encontrei ninguém com essa tag.',
@@ -967,7 +1008,7 @@ test('buscar tag returns not found when shareTag does not exist', async () => {
   ].join('\n'));
   assert.deepEqual(userService.calls, [{
     method: 'getUserByShareTag',
-    shareTag: 'NAO-8K2P7Q',
+    shareTag: '999999',
   }]);
   assert.equal(firebase.pushes.length, 0);
 });
@@ -976,7 +1017,7 @@ test('buscar tag without shareTag asks for the tag', async () => {
   const userService = createSignupUserService();
   const { firebase, service } = createService({
     seed: expenseSeed(),
-    session: { group: 'CASA2024', user: 'Ana' },
+    session: { group: 'SALVAMONEY', user: '482913' },
     userService,
   });
   const resposta = await service.processarMensagem('5511888888888', 'buscar tag');
@@ -985,7 +1026,7 @@ test('buscar tag without shareTag asks for the tag', async () => {
     'Envie a tag que deseja buscar.',
     '',
     'Exemplo:',
-    'buscar tag ANNA-8K2P7Q',
+    'buscar tag 123456',
   ].join('\n'));
   assert.deepEqual(userService.calls, []);
   assert.equal(firebase.pushes.length, 0);
@@ -997,27 +1038,27 @@ test('procurar tag and encontrar tag work as aliases', async () => {
       phone: '5511999999999',
       name: 'Anna',
       email: 'anna@email.com',
-      shareTag: 'ANNA-8K2P7Q',
+      shareTag: '482913',
     },
   });
   const { firebase, service } = createService({
     seed: expenseSeed(),
-    session: { group: 'CASA2024', user: 'Ana' },
+    session: { group: 'SALVAMONEY', user: '482913' },
     userService,
   });
-  const procurar = await service.processarMensagem('5511888888888', 'procurar tag ANNA-8K2P7Q');
-  const encontrar = await service.processarMensagem('5511888888888', 'encontrar tag ANNA-8K2P7Q');
+  const procurar = await service.processarMensagem('5511888888888', 'procurar tag 482913');
+  const encontrar = await service.processarMensagem('5511888888888', 'encontrar tag 482913');
 
   assert.match(procurar, /Encontrei/);
   assert.match(encontrar, /Encontrei/);
   assert.deepEqual(userService.calls, [
     {
       method: 'getUserByShareTag',
-      shareTag: 'ANNA-8K2P7Q',
+      shareTag: '482913',
     },
     {
       method: 'getUserByShareTag',
-      shareTag: 'ANNA-8K2P7Q',
+      shareTag: '482913',
     },
   ]);
   assert.equal(firebase.pushes.length, 0);
@@ -1029,16 +1070,16 @@ test('buscar tag command does not register expenses', async () => {
       phone: '5511999999999',
       name: 'Anna',
       email: 'anna@email.com',
-      shareTag: 'ANNA-8K2P7Q',
+      shareTag: '482913',
     },
   });
   const { firebase, service } = createService({
     seed: expenseSeed(),
-    session: { group: 'CASA2024', user: 'Ana' },
+    session: { group: 'SALVAMONEY', user: '482913' },
     userService,
   });
 
-  await service.processarMensagem('5511888888888', 'buscar tag ANNA-8K2P7Q');
+  await service.processarMensagem('5511888888888', 'buscar tag 482913');
 
   assert.equal(firebase.pushes.length, 0);
 });
@@ -1052,28 +1093,28 @@ test('signup flow keeps normal expense parsing inactive while waiting for user d
   });
   const resposta = await service.processarMensagem('5511999999999', '35 uber');
 
-  assert.equal(resposta, 'Agora me envie seu e-mail.');
+  assert.match(resposta, /Conta criada, 35 uber!/);
   assert.equal(firebase.pushes.length, 0);
 });
 
 test('normal text expense still works when signup is not active', async () => {
   const { firebase, service } = createService({
     seed: expenseSeed(),
-    session: { group: 'CASA2024', user: 'Ana' },
+    session: { group: 'SALVAMONEY', user: '482913' },
   });
   const resposta = await service.processarMensagem('5511999999999', '35 uber');
 
   assert.match(resposta, /uber/);
   assert.match(resposta, /registrado/);
   assert.equal(firebase.pushes.length, 1);
-  assert.match(firebase.pushes[0].path, /grupos\/CASA2024\/usuarios\/Ana\/gastos\//);
+  assert.match(firebase.pushes[0].path, /grupos\/SALVAMONEY\/usuarios\/482913\/gastos\//);
   assert.equal(firebase.pushes[0].value.origem, 'texto');
   assert.deepEqual(firebase.sets, [{
     path: `transactionsByUser/5511999999999/${currentMonthKey()}/push_1`,
     value: {
       ...firebase.pushes[0].value,
-      legacyGroup: 'CASA2024',
-      legacyUser: 'Ana',
+      legacyGroup: 'SALVAMONEY',
+      legacyUser: '482913',
       legacyExpenseId: 'push_1',
       migrated: false,
       sourcePath: `${firebase.pushes[0].path}/push_1`,
@@ -1083,14 +1124,14 @@ test('normal text expense still works when signup is not active', async () => {
 
 test('normal text expense asks to link an account after sair da conta', async () => {
   const { firebase, service } = createStatefulService({
-    initialSession: { group: 'CASA2024', user: 'Ana' },
+    initialSession: { group: 'SALVAMONEY', user: '482913' },
     seed: expenseSeed(),
   });
   const logout = await service.processarMensagem('5511999999999', 'sair da conta');
   const resposta = await service.processarMensagem('5511999999999', '35 uber');
 
   assert.match(logout, /Você saiu da sua conta atual/);
-  assert.match(resposta, /Para usar o SalvaMoney, primeiro vincule sua conta/);
+  assert.match(resposta, /crie sua conta pelo WhatsApp/);
   assert.equal(firebase.pushes.length, 0);
 });
 
@@ -1124,7 +1165,7 @@ test('resumo summarizes the current month session expenses', async () => {
         },
       },
     },
-    session: { group: 'CASA2024', user: 'Ana' },
+    session: { group: 'SALVAMONEY', user: '482913' },
   });
   const resposta = await service.processarMensagem('5511999999999', 'resumo');
 
@@ -1151,7 +1192,7 @@ test('gastos hoje only totals items recorded today', async () => {
         value: 50,
       },
     }),
-    session: { group: 'CASA2024', user: 'Ana' },
+    session: { group: 'SALVAMONEY', user: '482913' },
   });
   const resposta = await service.processarMensagem('5511999999999', 'gastos hoje');
 
@@ -1186,7 +1227,7 @@ test('listar gastos prints recent month expenses', async () => {
         },
       },
     },
-    session: { group: 'CASA2024', user: 'Ana' },
+    session: { group: 'SALVAMONEY', user: '482913' },
   });
   const resposta = await service.processarMensagem('5511999999999', 'listar gastos');
 
@@ -1199,7 +1240,7 @@ test('listar gastos prints recent month expenses', async () => {
 test('cadastrar fixo with day saves the site-compatible fixed expense schema', async () => {
   const { firebase, service } = createService({
     seed: expenseSeed(),
-    session: { group: 'CASA2024', user: 'Ana' },
+    session: { group: 'SALVAMONEY', user: '482913' },
   });
   const resposta = await service.processarMensagem(
     '5511999999999',
@@ -1213,7 +1254,7 @@ test('cadastrar fixo with day saves the site-compatible fixed expense schema', a
   assert.match(resposta, /não gerou gasto mensal agora/);
   assert.deepEqual(firebase.pushes, [{
     id: 'push_1',
-    path: 'grupos/CASA2024/usuarios/Ana/fixos',
+    path: 'grupos/SALVAMONEY/usuarios/482913/fixos',
     value: {
       desc: 'internet',
       value: 89.9,
@@ -1221,7 +1262,7 @@ test('cadastrar fixo with day saves the site-compatible fixed expense schema', a
       dia: 10,
     },
   }]);
-  assert.deepEqual(firebase.getValue('grupos/CASA2024/usuarios/Ana/fixos/push_1'), {
+  assert.deepEqual(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/fixos/push_1'), {
     desc: 'internet',
     value: 89.9,
     cat: 'Moradia',
@@ -1232,7 +1273,7 @@ test('cadastrar fixo with day saves the site-compatible fixed expense schema', a
 test('cadastrar fixo without day asks for the day and does not save', async () => {
   const { firebase, service } = createService({
     seed: expenseSeed(),
-    session: { group: 'CASA2024', user: 'Ana' },
+    session: { group: 'SALVAMONEY', user: '482913' },
   });
   const resposta = await service.processarMensagem('5511999999999', 'cadastrar fixo internet 99,90');
 
@@ -1248,7 +1289,7 @@ test('cadastrar fixo without day asks for the day and does not save', async () =
 test('listar fixos reads the legacy site fixed expenses path', async () => {
   const { service } = createService({
     seed: fixedExpenseSeed(),
-    session: { group: 'CASA2024', user: 'Ana' },
+    session: { group: 'SALVAMONEY', user: '482913' },
   });
   const resposta = await service.processarMensagem('5511999999999', 'listar fixos');
 
@@ -1260,17 +1301,17 @@ test('listar fixos reads the legacy site fixed expenses path', async () => {
 test('remover fixo unique match removes only the fixed expense', async () => {
   const { firebase, service } = createService({
     seed: fixedExpenseSeed(),
-    session: { group: 'CASA2024', user: 'Ana' },
+    session: { group: 'SALVAMONEY', user: '482913' },
   });
   const resposta = await service.processarMensagem('5511999999999', 'apagar fixo internet');
 
   assert.match(resposta, /Gasto fixo removido/);
   assert.match(resposta, /internet/);
   assert.deepEqual(firebase.removals, [
-    'grupos/CASA2024/usuarios/Ana/fixos/fixo_internet',
+    'grupos/SALVAMONEY/usuarios/482913/fixos/fixo_internet',
   ]);
-  assert.equal(firebase.getValue('grupos/CASA2024/usuarios/Ana/fixos/fixo_internet'), undefined);
-  assert.deepEqual(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${currentMonthKey()}/gasto_internet`), {
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/fixos/fixo_internet'), undefined);
+  assert.deepEqual(firebase.getValue(`grupos/SALVAMONEY/usuarios/482913/gastos/${currentMonthKey()}/gasto_internet`), {
     cat: 'Moradia',
     createdAt: '2026-05-20T10:00:00.000Z',
     date: todayIso(),
@@ -1281,14 +1322,14 @@ test('remover fixo unique match removes only the fixed expense', async () => {
 
 test('remover fixo ambiguous match lists candidates and waits for a number', async () => {
   const seed = fixedExpenseSeed();
-  seed.grupos.CASA2024.usuarios.Ana.fixos.fixo_internet_casa = {
+  seed.grupos.SALVAMONEY.usuarios[482913].fixos.fixo_internet_casa = {
     cat: 'Moradia',
     desc: 'internet casa',
     dia: 15,
     value: 119.9,
   };
   const { firebase, getSession, service } = createStatefulService({
-    initialSession: { group: 'CASA2024', user: 'Ana' },
+    initialSession: { group: 'SALVAMONEY', user: '482913' },
     seed,
   });
   const resposta = await service.processarMensagem('5511999999999', 'remover fixo internet');
@@ -1307,8 +1348,8 @@ test('remover fixo ambiguous match lists candidates and waits for a number', asy
 test('pending fixed expense selection removes only the selected fixed expense', async () => {
   const { firebase, getSession, service } = createStatefulService({
     initialSession: {
-      group: 'CASA2024',
-      user: 'Ana',
+      group: 'SALVAMONEY',
+      user: '482913',
       pendingDelete: {
         type: 'fixed_expense_selection',
         candidates: [
@@ -1336,26 +1377,26 @@ test('pending fixed expense selection removes only the selected fixed expense', 
   assert.match(resposta, /Gasto fixo removido/);
   assert.match(resposta, /academia/);
   assert.deepEqual(getSession(), {
-    group: 'CASA2024',
-    user: 'Ana',
+    group: 'SALVAMONEY',
+    user: '482913',
   });
   assert.deepEqual(firebase.removals, [
-    'grupos/CASA2024/usuarios/Ana/fixos/fixo_academia',
+    'grupos/SALVAMONEY/usuarios/482913/fixos/fixo_academia',
   ]);
-  assert.equal(firebase.getValue('grupos/CASA2024/usuarios/Ana/fixos/fixo_academia'), undefined);
-  assert.equal(firebase.getValue('grupos/CASA2024/usuarios/Ana/fixos/fixo_internet').desc, 'internet');
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/fixos/fixo_academia'), undefined);
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/fixos/fixo_internet').desc, 'internet');
 });
 
 test('apagar fixo command does not fall through to normal expense deletion', async () => {
   const { firebase, service } = createService({
     seed: fixedExpenseSeed(),
-    session: { group: 'CASA2024', user: 'Ana' },
+    session: { group: 'SALVAMONEY', user: '482913' },
   });
   const resposta = await service.processarMensagem('5511999999999', 'apagar fixo telefone');
 
   assert.equal(resposta, 'Não encontrei nenhum gasto fixo parecido. Nenhum gasto foi apagado.');
   assert.deepEqual(firebase.removals, []);
-  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${currentMonthKey()}/gasto_internet`).desc, 'internet');
+  assert.equal(firebase.getValue(`grupos/SALVAMONEY/usuarios/482913/gastos/${currentMonthKey()}/gasto_internet`).desc, 'internet');
 });
 
 test('fixed expense commands require a linked session', async () => {
@@ -1364,7 +1405,7 @@ test('fixed expense commands require a linked session', async () => {
   });
   const resposta = await service.processarMensagem('5511999999999', 'fixo aluguel 1800 dia 10');
 
-  assert.match(resposta, /Para usar o SalvaMoney, primeiro vincule sua conta/);
+  assert.match(resposta, /crie sua conta pelo WhatsApp/);
   assert.deepEqual(firebase.pushes, []);
 });
 
@@ -1397,14 +1438,14 @@ test('apagar ultimo removes the latest expense in the fake Firebase tree', async
         },
       },
     },
-    session: { group: 'CASA2024', user: 'Ana' },
+    session: { group: 'SALVAMONEY', user: '482913' },
   });
   const resposta = await service.processarMensagem('5511999999999', 'apagar ultimo');
 
   assert.match(resposta, /Apaguei/);
   assert.match(resposta, /uber/);
   assert.equal(firebase.removals.length, 1);
-  assert.equal(firebase.removals[0], `grupos/CASA2024/usuarios/Ana/gastos/${currentMonthKey()}/ultimo`);
+  assert.equal(firebase.removals[0], `grupos/SALVAMONEY/usuarios/482913/gastos/${currentMonthKey()}/ultimo`);
   assert.deepEqual(firebase.getValue(`transactionsByUser/5511999999999/${currentMonthKey()}/ultimo`), {
     cat: 'Transporte',
     desc: 'uber',
@@ -1414,7 +1455,7 @@ test('apagar ultimo removes the latest expense in the fake Firebase tree', async
 
 test('apagar mercado lists matching candidates and does not delete immediately', async () => {
   const { firebase, getSession, service } = createStatefulService({
-    initialSession: { group: 'CASA2024', user: 'Ana' },
+    initialSession: { group: 'SALVAMONEY', user: '482913' },
     seed: deleteSelectionSeed(),
   });
   const resposta = await service.processarMensagem('5511999999999', 'apagar mercado');
@@ -1425,8 +1466,8 @@ test('apagar mercado lists matching candidates and does not delete immediately',
   assert.match(resposta, /Responda com o número/);
   assert.deepEqual(firebase.removals, []);
   assert.deepEqual(getSession(), {
-    group: 'CASA2024',
-    user: 'Ana',
+    group: 'SALVAMONEY',
+    user: '482913',
     pendingDelete: {
       type: 'expense_selection',
       candidates: [
@@ -1454,8 +1495,8 @@ test('apagar mercado lists matching candidates and does not delete immediately',
 test('pending delete numeric response removes only the selected normal expense', async () => {
   const { firebase, getSession, service } = createStatefulService({
     initialSession: {
-      group: 'CASA2024',
-      user: 'Ana',
+      group: 'SALVAMONEY',
+      user: '482913',
       pendingDelete: {
         type: 'expense_selection',
         candidates: [
@@ -1485,23 +1526,23 @@ test('pending delete numeric response removes only the selected normal expense',
   assert.match(resposta, /Apaguei/);
   assert.match(resposta, /Mercado extra/);
   assert.deepEqual(getSession(), {
-    group: 'CASA2024',
-    user: 'Ana',
+    group: 'SALVAMONEY',
+    user: '482913',
   });
   assert.deepEqual(firebase.removals, [
-    `grupos/CASA2024/usuarios/Ana/gastos/${currentMonthKey()}/mercado_2`,
+    `grupos/SALVAMONEY/usuarios/482913/gastos/${currentMonthKey()}/mercado_2`,
     `transactionsByUser/5511999999999/${currentMonthKey()}/mercado_2`,
   ]);
-  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${currentMonthKey()}/mercado_2`), undefined);
-  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${currentMonthKey()}/mercado_1`).desc, 'Mercado');
-  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${currentMonthKey()}/uber_1`).desc, 'Uber');
+  assert.equal(firebase.getValue(`grupos/SALVAMONEY/usuarios/482913/gastos/${currentMonthKey()}/mercado_2`), undefined);
+  assert.equal(firebase.getValue(`grupos/SALVAMONEY/usuarios/482913/gastos/${currentMonthKey()}/mercado_1`).desc, 'Mercado');
+  assert.equal(firebase.getValue(`grupos/SALVAMONEY/usuarios/482913/gastos/${currentMonthKey()}/uber_1`).desc, 'Uber');
 });
 
 test('pending delete cancellation clears state without removing expenses', async () => {
   const { firebase, getSession, service } = createStatefulService({
     initialSession: {
-      group: 'CASA2024',
-      user: 'Ana',
+      group: 'SALVAMONEY',
+      user: '482913',
       pendingDelete: {
         type: 'expense_selection',
         candidates: [{
@@ -1520,8 +1561,8 @@ test('pending delete cancellation clears state without removing expenses', async
 
   assert.equal(resposta, 'Exclusão cancelada. Nenhum gasto foi apagado.');
   assert.deepEqual(getSession(), {
-    group: 'CASA2024',
-    user: 'Ana',
+    group: 'SALVAMONEY',
+    user: '482913',
   });
   assert.deepEqual(firebase.removals, []);
 });
@@ -1540,8 +1581,8 @@ test('invalid pending delete response keeps the pending selection active', async
   };
   const { firebase, getSession, savedSessions, service } = createStatefulService({
     initialSession: {
-      group: 'CASA2024',
-      user: 'Ana',
+      group: 'SALVAMONEY',
+      user: '482913',
       pendingDelete,
     },
     seed: deleteSelectionSeed(),
@@ -1557,8 +1598,8 @@ test('invalid pending delete response keeps the pending selection active', async
 test('selected installment candidate deletes only that installment', async () => {
   const { firebase, getSession, service } = createStatefulService({
     initialSession: {
-      group: 'CASA2024',
-      user: 'Ana',
+      group: 'SALVAMONEY',
+      user: '482913',
       pendingDelete: {
         type: 'expense_selection',
         candidates: [{
@@ -1579,21 +1620,21 @@ test('selected installment candidate deletes only that installment', async () =>
   assert.match(resposta, /Apaguei somente esta parcela/);
   assert.match(resposta, /próxima etapa|proxima etapa/);
   assert.deepEqual(getSession(), {
-    group: 'CASA2024',
-    user: 'Ana',
+    group: 'SALVAMONEY',
+    user: '482913',
   });
   assert.deepEqual(firebase.removals, [
-    `grupos/CASA2024/usuarios/Ana/gastos/${currentMonthKey()}/tv_1`,
+    `grupos/SALVAMONEY/usuarios/482913/gastos/${currentMonthKey()}/tv_1`,
     `transactionsByUser/5511999999999/${currentMonthKey()}/tv_1`,
   ]);
-  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${currentMonthKey()}/tv_1`), undefined);
-  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${currentMonthKey()}/uber_1`).desc, 'Uber');
+  assert.equal(firebase.getValue(`grupos/SALVAMONEY/usuarios/482913/gastos/${currentMonthKey()}/tv_1`), undefined);
+  assert.equal(firebase.getValue(`grupos/SALVAMONEY/usuarios/482913/gastos/${currentMonthKey()}/uber_1`).desc, 'Uber');
 });
 
 test('apagar unknown free text does not remove anything', async () => {
   const { firebase, savedSessions, service } = createService({
     seed: deleteSelectionSeed(),
-    session: { group: 'CASA2024', user: 'Ana' },
+    session: { group: 'SALVAMONEY', user: '482913' },
   });
   const resposta = await service.processarMensagem('5511999999999', 'apagar farmacia');
 
@@ -1604,7 +1645,7 @@ test('apagar unknown free text does not remove anything', async () => {
 
 test('apagar parcelas da tv lists installment candidates without deleting immediately', async () => {
   const { firebase, getSession, service } = createStatefulService({
-    initialSession: { group: 'CASA2024', user: 'Ana' },
+    initialSession: { group: 'SALVAMONEY', user: '482913' },
     seed: installmentDeleteSeed(),
   });
   const resposta = await service.processarMensagem('5511999999999', 'apagar parcelas da tv');
@@ -1616,8 +1657,8 @@ test('apagar parcelas da tv lists installment candidates without deleting immedi
   assert.match(resposta, /Responda o número/);
   assert.deepEqual(firebase.removals, []);
   assert.deepEqual(getSession(), {
-    group: 'CASA2024',
-    user: 'Ana',
+    group: 'SALVAMONEY',
+    user: '482913',
     pendingDelete: {
       type: 'installment_selection',
       candidates: [
@@ -1653,8 +1694,8 @@ test('installment selection asks for final confirmation before deleting all inst
   };
   const { firebase, getSession, service } = createStatefulService({
     initialSession: {
-      group: 'CASA2024',
-      user: 'Ana',
+      group: 'SALVAMONEY',
+      user: '482913',
       pendingDelete: {
         type: 'installment_selection',
         candidates: [installment],
@@ -1670,8 +1711,8 @@ test('installment selection asks for final confirmation before deleting all inst
   ].join('\n'));
   assert.deepEqual(firebase.removals, []);
   assert.deepEqual(getSession(), {
-    group: 'CASA2024',
-    user: 'Ana',
+    group: 'SALVAMONEY',
+    user: '482913',
     pendingDelete: {
       type: 'installment_confirmation',
       installment,
@@ -1682,8 +1723,8 @@ test('installment selection asks for final confirmation before deleting all inst
 test('installment final confirmation removes only expenses with the selected parcelaId across months', async () => {
   const { firebase, getSession, service } = createStatefulService({
     initialSession: {
-      group: 'CASA2024',
-      user: 'Ana',
+      group: 'SALVAMONEY',
+      user: '482913',
       pendingDelete: {
         type: 'installment_confirmation',
         installment: {
@@ -1703,31 +1744,31 @@ test('installment final confirmation removes only expenses with the selected par
   assert.match(resposta, /Apaguei 3 parcelas do parcelamento/);
   assert.match(resposta, /TV/);
   assert.deepEqual(getSession(), {
-    group: 'CASA2024',
-    user: 'Ana',
+    group: 'SALVAMONEY',
+    user: '482913',
   });
   assert.deepEqual(firebase.removals, [
-    `grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(0)}/tv_1`,
+    `grupos/SALVAMONEY/usuarios/482913/gastos/${monthKeyOffset(0)}/tv_1`,
     `transactionsByUser/5511999999999/${monthKeyOffset(0)}/tv_1`,
-    `grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(1)}/tv_2`,
+    `grupos/SALVAMONEY/usuarios/482913/gastos/${monthKeyOffset(1)}/tv_2`,
     `transactionsByUser/5511999999999/${monthKeyOffset(1)}/tv_2`,
-    `grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(2)}/tv_3`,
+    `grupos/SALVAMONEY/usuarios/482913/gastos/${monthKeyOffset(2)}/tv_3`,
     `transactionsByUser/5511999999999/${monthKeyOffset(2)}/tv_3`,
   ]);
-  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(0)}/tv_1`), undefined);
-  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(1)}/tv_2`), undefined);
-  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(2)}/tv_3`), undefined);
-  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(0)}/tv_sala_1`).parcelaId, 'tv-456');
-  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(1)}/tv_sala_2`).parcelaId, 'tv-456');
-  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(0)}/tv_normal`).desc, 'TV');
-  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(1)}/notebook_1`).parcelaId, 'note-999');
+  assert.equal(firebase.getValue(`grupos/SALVAMONEY/usuarios/482913/gastos/${monthKeyOffset(0)}/tv_1`), undefined);
+  assert.equal(firebase.getValue(`grupos/SALVAMONEY/usuarios/482913/gastos/${monthKeyOffset(1)}/tv_2`), undefined);
+  assert.equal(firebase.getValue(`grupos/SALVAMONEY/usuarios/482913/gastos/${monthKeyOffset(2)}/tv_3`), undefined);
+  assert.equal(firebase.getValue(`grupos/SALVAMONEY/usuarios/482913/gastos/${monthKeyOffset(0)}/tv_sala_1`).parcelaId, 'tv-456');
+  assert.equal(firebase.getValue(`grupos/SALVAMONEY/usuarios/482913/gastos/${monthKeyOffset(1)}/tv_sala_2`).parcelaId, 'tv-456');
+  assert.equal(firebase.getValue(`grupos/SALVAMONEY/usuarios/482913/gastos/${monthKeyOffset(0)}/tv_normal`).desc, 'TV');
+  assert.equal(firebase.getValue(`grupos/SALVAMONEY/usuarios/482913/gastos/${monthKeyOffset(1)}/notebook_1`).parcelaId, 'note-999');
 });
 
 test('installment final confirmation cancellation keeps all installments', async () => {
   const { firebase, getSession, service } = createStatefulService({
     initialSession: {
-      group: 'CASA2024',
-      user: 'Ana',
+      group: 'SALVAMONEY',
+      user: '482913',
       pendingDelete: {
         type: 'installment_confirmation',
         installment: {
@@ -1746,20 +1787,20 @@ test('installment final confirmation cancellation keeps all installments', async
 
   assert.equal(resposta, 'Exclusão cancelada. Nenhum gasto foi apagado.');
   assert.deepEqual(getSession(), {
-    group: 'CASA2024',
-    user: 'Ana',
+    group: 'SALVAMONEY',
+    user: '482913',
   });
   assert.deepEqual(firebase.removals, []);
-  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(0)}/tv_1`).parcelaId, 'tv-123');
-  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(1)}/tv_2`).parcelaId, 'tv-123');
-  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(2)}/tv_3`).parcelaId, 'tv-123');
+  assert.equal(firebase.getValue(`grupos/SALVAMONEY/usuarios/482913/gastos/${monthKeyOffset(0)}/tv_1`).parcelaId, 'tv-123');
+  assert.equal(firebase.getValue(`grupos/SALVAMONEY/usuarios/482913/gastos/${monthKeyOffset(1)}/tv_2`).parcelaId, 'tv-123');
+  assert.equal(firebase.getValue(`grupos/SALVAMONEY/usuarios/482913/gastos/${monthKeyOffset(2)}/tv_3`).parcelaId, 'tv-123');
 });
 
 test('new delete command clears an active expense selection before processing installment deletion', async () => {
   const { firebase, getSession, savedSessions, service } = createStatefulService({
     initialSession: {
-      group: 'CASA2024',
-      user: 'Ana',
+      group: 'SALVAMONEY',
+      user: '482913',
       pendingDelete: {
         type: 'expense_selection',
         candidates: [{
@@ -1781,8 +1822,8 @@ test('new delete command clears an active expense selection before processing in
   assert.deepEqual(savedSessions[0], {
     phone: '5511999999999',
     data: {
-      group: 'CASA2024',
-      user: 'Ana',
+      group: 'SALVAMONEY',
+      user: '482913',
     },
   });
   assert.equal(getSession().pendingDelete.type, 'installment_selection');
@@ -1795,14 +1836,14 @@ test('new delete command clears an active expense selection before processing in
 test('apagar parcelamento without matching installments does not remove normal expenses', async () => {
   const { firebase, savedSessions, service } = createService({
     seed: installmentDeleteSeed(),
-    session: { group: 'CASA2024', user: 'Ana' },
+    session: { group: 'SALVAMONEY', user: '482913' },
   });
   const resposta = await service.processarMensagem('5511999999999', 'apagar parcelamento geladeira');
 
   assert.equal(resposta, 'Não encontrei nenhum parcelamento parecido. Nenhum gasto foi apagado.');
   assert.deepEqual(firebase.removals, []);
   assert.deepEqual(savedSessions, []);
-  assert.equal(firebase.getValue(`grupos/CASA2024/usuarios/Ana/gastos/${monthKeyOffset(0)}/tv_normal`).desc, 'TV');
+  assert.equal(firebase.getValue(`grupos/SALVAMONEY/usuarios/482913/gastos/${monthKeyOffset(0)}/tv_normal`).desc, 'TV');
 });
 
 test('AI delete action does not remove expenses directly', async () => {
@@ -1817,7 +1858,7 @@ test('AI delete action does not remove expenses directly', async () => {
       }),
     },
     seed: deleteSelectionSeed(),
-    session: { group: 'CASA2024', user: 'Ana' },
+    session: { group: 'SALVAMONEY', user: '482913' },
   });
   const resposta = await service.processarMensagem('5511999999999', 'desfaz aquele gasto do mercado');
 
@@ -1828,7 +1869,7 @@ test('AI delete action does not remove expenses directly', async () => {
 test('parcelamento writes one installment per month to the fake Firebase tree', async () => {
   const { firebase, service } = createService({
     seed: expenseSeed(),
-    session: { group: 'CASA2024', user: 'Ana' },
+    session: { group: 'SALVAMONEY', user: '482913' },
   });
   const resposta = await service.processarMensagem('5511999999999', 'parcelei TV 1200 em 12x');
 
@@ -1851,8 +1892,8 @@ test('parcelamento writes one installment per month to the fake Firebase tree', 
     path: `transactionsByUser/5511999999999/${firebase.pushes[0].path.split('/').pop()}/push_1`,
     value: {
       ...firebase.pushes[0].value,
-      legacyGroup: 'CASA2024',
-      legacyUser: 'Ana',
+      legacyGroup: 'SALVAMONEY',
+      legacyUser: '482913',
       legacyExpenseId: 'push_1',
       migrated: false,
       sourcePath: `${firebase.pushes[0].path}/push_1`,
@@ -1863,7 +1904,7 @@ test('parcelamento writes one installment per month to the fake Firebase tree', 
 test('parcelamento rounds installment values for 100 in 3x using the site-compatible schema', async () => {
   const { firebase, service } = createService({
     seed: expenseSeed(),
-    session: { group: 'CASA2024', user: 'Ana' },
+    session: { group: 'SALVAMONEY', user: '482913' },
   });
   const resposta = await service.processarMensagem('5511999999999', 'parcelei 100 compra em 3x');
 
@@ -1875,10 +1916,10 @@ test('parcelamento rounds installment values for 100 in 3x using the site-compat
   assert.ok(parcelaId);
 
   firebase.pushes.forEach((push, index) => {
-    assert.match(push.path, /grupos\/CASA2024\/usuarios\/Ana\/gastos\//);
+    assert.match(push.path, /grupos\/SALVAMONEY\/usuarios\/482913\/gastos\//);
     assert.equal(push.value.desc, `compra (${index + 1}/3x)`);
     assert.equal(push.value.value, 33.33);
-    assert.equal(push.value.user, 'Ana');
+    assert.equal(push.value.user, '482913');
     assert.equal(push.value.viaBot, true);
     assert.equal(push.value.parcelaId, parcelaId);
     assert.equal(push.value.parcelaNum, index + 1);
@@ -1894,7 +1935,7 @@ test('audio transcription can register parcelamento through the current text flo
       transcreverAudio: async () => 'parcelei 300 fone em 3x',
     },
     seed: expenseSeed(),
-    session: { group: 'CASA2024', user: 'Ana' },
+    session: { group: 'SALVAMONEY', user: '482913' },
   });
   const resposta = await service.processarMensagem('5511999999999', '', {
     base64: 'audio-base64',
@@ -1918,7 +1959,7 @@ test('audio transcription reuses the current text expense flow', async () => {
       transcreverAudio: async () => '35 uber',
     },
     seed: expenseSeed(),
-    session: { group: 'CASA2024', user: 'Ana' },
+    session: { group: 'SALVAMONEY', user: '482913' },
   });
   const resposta = await service.processarMensagem('5511999999999', '', {
     base64: 'audio-base64',
@@ -1944,7 +1985,7 @@ test('image analysis registers the extracted expense through the current image f
       }),
     },
     seed: expenseSeed(),
-    session: { group: 'CASA2024', user: 'Ana' },
+    session: { group: 'SALVAMONEY', user: '482913' },
   });
   const resposta = await service.processarMensagem('5511999999999', '', {
     base64: 'image-base64',
@@ -1973,7 +2014,7 @@ test('AI action can register an expense when the simple parser has no expense', 
       }),
     },
     seed: expenseSeed(),
-    session: { group: 'CASA2024', user: 'Ana' },
+    session: { group: 'SALVAMONEY', user: '482913' },
   });
   const resposta = await service.processarMensagem('5511999999999', 'gasto do curso');
 

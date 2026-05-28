@@ -17,9 +17,11 @@ const { createFixedExpenseService } = require('./bot/fixed-expense-service');
 const { normalizeText } = require('./bot/text-utils');
 const { parsearGasto, parsearParcelamento } = require('./expense-parser');
 const {
+  DEFAULT_GROUP,
   createUserService,
   isValidEmail,
   normalizeEmail,
+  normalizeAccessTag,
 } = require('./services/user-service');
 
 const SIGNUP_ASK_NAME = 'signup_ask_name';
@@ -54,6 +56,7 @@ const MY_PROFILE_COMMANDS = new Set([
   'meu perfil',
 ]);
 const FIND_TAG_COMMAND_PATTERN = /^(buscar|procurar|encontrar) tag(?: (.+))?$/;
+const TAG_ACCOUNT_REQUIRED_MESSAGE = 'Para usar o SalvaMoney, crie sua conta pelo WhatsApp usando: criar conta SeuNome ou entre com sua tag: entrar 123456.';
 
 function defaultFirebaseOps() {
   const { getFirebaseOps } = require('./firebase-db');
@@ -71,6 +74,18 @@ function normalizedQuestionCommand(value) {
 
 function isSignupStartCommand(value) {
   return SIGNUP_START_COMMANDS.has(normalizedCommand(value));
+}
+
+function parseSignupStartCommand(value) {
+  const match = String(value || '').trim().match(/^(criar conta|cadastro)(?:\s+(.+))?$/i);
+
+  if (!match) {
+    return null;
+  }
+
+  return {
+    name: String(match[2] || '').trim(),
+  };
 }
 
 function isSignupCancelCommand(value) {
@@ -107,6 +122,12 @@ function isSignupActive(sessao) {
 
 function hasLinkedAccountSession(sessao) {
   return Boolean(sessao?.user && sessao?.group);
+}
+
+function hasValidAccessSession(sessao) {
+  const tag = normalizeAccessTag(sessao?.tag || sessao?.user);
+
+  return Boolean(tag && sessao?.group === DEFAULT_GROUP && sessao?.user === tag);
 }
 
 function hasPendingDelete(sessao) {
@@ -170,8 +191,7 @@ function existingAccountMessage(user) {
     'Você já possui uma conta no SalvaMoney.',
     '',
     `Nome: ${user.name || '-'}`,
-    `E-mail: ${user.email || '-'}`,
-    `Sua tag: ${user.shareTag || '-'}`,
+    `Sua tag de acesso é: ${user.tag || user.shareTag || '-'}`,
   ].join('\n');
 }
 
@@ -179,11 +199,11 @@ function welcomeSignupMessage(user, fallbackName) {
   const name = user.name || fallbackName;
 
   return [
-    `Seja bem-vinda, ${name}!`,
+    `Conta criada, ${name}!`,
     '',
-    `Sua tag no SalvaMoney é: ${user.shareTag}`,
+    `Sua tag de acesso é: ${user.tag || user.shareTag}`,
     '',
-    'Compartilhe essa tag com outras pessoas para dividir gastos e organizar contas.',
+    'Use essa tag para entrar no site e no WhatsApp.',
   ].join('\n');
 }
 
@@ -198,9 +218,7 @@ function missingUserAccountMessage() {
 
 function myTagMessage(user) {
   return [
-    `Sua tag no SalvaMoney é: ${user.shareTag}`,
-    '',
-    'Compartilhe essa tag com outras pessoas para dividir gastos e organizar contas.',
+    `Sua tag de acesso é: ${user.tag || user.shareTag}`,
   ].join('\n');
 }
 
@@ -210,7 +228,7 @@ function myProfileMessage(user) {
     '',
     `Nome: ${user.name || '-'}`,
     `E-mail: ${user.email || '-'}`,
-    `Tag: ${user.shareTag || '-'}`,
+    `Tag: ${user.tag || user.shareTag || '-'}`,
   ].join('\n');
 }
 
@@ -219,7 +237,7 @@ function missingSearchTagMessage() {
     'Envie a tag que deseja buscar.',
     '',
     'Exemplo:',
-    'buscar tag ANNA-8K2P7Q',
+    'buscar tag 123456',
   ].join('\n');
 }
 
@@ -228,7 +246,7 @@ function foundShareTagMessage(user, shareTag) {
     'Encontrei:',
     '',
     `Nome: ${user.name || '-'}`,
-    `Tag: ${user.shareTag || shareTag}`,
+    `Tag: ${user.tag || user.shareTag || shareTag}`,
   ].join('\n');
 }
 
@@ -283,16 +301,17 @@ function createBotService({
     db,
     firebaseOps: { get, push, ref, remove, set },
   });
+  const userService = providedUserService || createUserService({
+    db,
+    firebaseOps: { get, ref, set },
+  });
   const accountService = createAccountService({
     db,
     firebaseOps: { get, ref, set },
     saveSession,
     siteUrl: SITE_URL,
     todayIso,
-  });
-  const userService = providedUserService || createUserService({
-    db,
-    firebaseOps: { get, ref, set },
+    userService,
   });
   const aiMediaService = createAiMediaService({
     config,
@@ -322,7 +341,7 @@ function createBotService({
       'Seu cadastro, sua tag e seus gastos foram preservados.',
       '',
       'Para entrar novamente, envie:',
-      'entrar SEU_NOME SEU_GRUPO',
+      'entrar 123456',
     ].join('\n');
   }
 
@@ -444,22 +463,55 @@ function createBotService({
         : notFoundShareTagMessage();
     }
 
-    const user = await userService.getUserByPhone(phone);
+    const existingUser = await userService.getUserByPhone(phone);
 
-    if (!user) {
+    if (!existingUser) {
       return missingUserAccountMessage();
     }
+
+    const user = await userService.getOrCreateUserByPhone(phone, {
+      email: existingUser.email,
+      name: existingUser.name,
+    });
+
+    await accountService.saveAccessSession(phone, user);
 
     return isMyTagCommand(msg)
       ? myTagMessage(user)
       : myProfileMessage(user);
   }
 
-  async function startSignup(phone, sessao) {
+  async function createAccountAndSession(phone, sessao, name) {
+    const user = await userService.getOrCreateUserByPhone(phone, { name });
+    const tag = user.tag || user.shareTag;
+
+    await saveSession(phone, {
+      group: DEFAULT_GROUP,
+      user: tag,
+      name: user.name || name,
+      tag,
+      updatedAt: todayIso(),
+    });
+
+    return welcomeSignupMessage(user, name);
+  }
+
+  async function startSignup(phone, sessao, name = '') {
     const existingUser = await userService.getUserByPhone(phone);
 
     if (existingUser) {
-      return existingAccountMessage(existingUser);
+      const user = await userService.getOrCreateUserByPhone(phone, {
+        email: existingUser.email,
+        name: existingUser.name,
+      });
+
+      await accountService.saveAccessSession(phone, user);
+
+      return existingAccountMessage(user);
+    }
+
+    if (name) {
+      return await createAccountAndSession(phone, sessao, name);
     }
 
     await saveSignupSession(phone, sessao, {
@@ -476,9 +528,10 @@ function createBotService({
 
   async function processarCadastro(phone, msg, sessao) {
     const signupActive = isSignupActive(sessao);
+    const signupStart = parseSignupStartCommand(msg);
 
-    if (!signupActive && isSignupStartCommand(msg)) {
-      return await startSignup(phone, sessao);
+    if (!signupActive && signupStart) {
+      return await startSignup(phone, sessao, signupStart.name);
     }
 
     if (!signupActive) {
@@ -498,13 +551,7 @@ function createBotService({
         return 'Qual é o seu nome?';
       }
 
-      await saveSignupSession(phone, sessao, {
-        signupStep: SIGNUP_ASK_EMAIL,
-        pendingName: name,
-        pendingEmail: null,
-      });
-
-      return 'Agora me envie seu e-mail.';
+      return await createAccountAndSession(phone, sessao, name);
     }
 
     if (sessao.signupStep === SIGNUP_ASK_EMAIL) {
@@ -571,28 +618,13 @@ function createBotService({
       return [
         '💰 *SalvaMoney Bot*',
         '',
-        'Para começar, você precisa vincular sua conta.',
+        'Para começar, crie sua conta ou entre com sua tag.',
         '',
-        '👤 *Entrar em um grupo existente:*',
-        '_entrar SEU NOME CODIGODOGRUPO_',
+        '👤 *Criar conta:*',
+        '_criar conta Carlos_',
         '',
-        'Exemplo:',
-        '_entrar Carlos CASA2024_',
-        '',
-        '🔁 *Trocar de conta:*',
-        '_trocar conta SEU NOME CODIGODOGRUPO_',
-        '',
-        '🆕 *Não tem código?*',
-        'Digite:',
-        '_criar código SEU NOME_',
-        '',
-        'Exemplo:',
-        '_criar código Carlos_',
-        '',
-        '🔑 *Para que serve o código?*',
-        'O código conecta sua conta do WhatsApp com o site.',
-        'Ele também serve para dividir contas com outras pessoas.',
-        'Se outra pessoa entrar no mesmo código que você, as contas divididas desse grupo ficarão visíveis para ela.',
+        '🔑 *Entrar:*',
+        '_entrar 123456_',
         '',
         '📌 *Registrar gasto:*',
         '_almocei e gastei 35_',
@@ -626,7 +658,7 @@ function createBotService({
         SITE_URL,
         '',
         hasLinkedAccountSession(sessao)
-          ? `✅ Conta atual: *${sessao.user}* | Grupo: *${sessao.group}*`
+          ? `✅ Conta atual: *${sessao.name || sessao.user}* | Tag: *${sessao.tag || sessao.user}*`
           : '⚠️ Você ainda não vinculou uma conta.',
       ].join('\n');
     }
@@ -668,25 +700,9 @@ function createBotService({
       return respostaConta;
     }
 
-    // ── SEM SESSÃO ──
-    if (!hasLinkedAccountSession(sessao)) {
-      return `⚠️ Para usar o SalvaMoney, primeiro vincule sua conta.
-
-Se você já tem um código, digite:
-_entrar SEU NOME CODIGODOGRUPO_
-
-Exemplo:
-_entrar João CASA2024_
-
-Se você ainda não tem código, digite:
-_criar código SEU NOME_
-
-Exemplo:
-_criar código João_
-
-🔑 O código serve para conectar sua conta ao site e também para dividir contas com outras pessoas.
-
-Se outra pessoa entrar no mesmo código que você, as contas divididas do grupo ficarão visíveis para ela.
+    // ── SEM SESSÃO VÁLIDA ──
+    if (!hasValidAccessSession(sessao)) {
+      return `${TAG_ACCOUNT_REQUIRED_MESSAGE}
 
 🌐 Site:
 ${SITE_URL}`;
