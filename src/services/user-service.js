@@ -5,6 +5,8 @@ const { getFirebaseOps } = require('../firebase-db');
 
 const SHARE_TAG_CODE_CHARSET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const SHARE_TAG_RANDOM_ATTEMPTS = 5;
+const SITE_DEFAULT_GROUP = 'SALVAMONEY';
+const FIREBASE_INVALID_KEY_CHARS = /[.#$\[\]\/\x00-\x1F\x7F]/g;
 
 function normalizePhone(phone) {
   return String(phone || '').replace(/\D/g, '');
@@ -20,6 +22,15 @@ function isValidEmail(email) {
 
 function nonEmptyString(value) {
   return typeof value === 'string' && value.trim().length > 0;
+}
+
+function normalizeSiteLoginTag(tag) {
+  return String(tag || '')
+    .trim()
+    .replace(/@/g, '')
+    .replace(/\s+/g, '')
+    .toLowerCase()
+    .replace(FIREBASE_INVALID_KEY_CHARS, '-');
 }
 
 function getFirstName(name) {
@@ -102,6 +113,34 @@ function createUserService({
     await set(ref(db, `shareTags/${shareTag}`), { phone });
   }
 
+  async function ensureSiteUserRecord(user) {
+    const tag = normalizeSiteLoginTag(user.shareTag);
+
+    if (!tag) {
+      return null;
+    }
+
+    const siteUserPath = `grupos/${SITE_DEFAULT_GROUP}/usuarios/${tag}`;
+    const snap = await get(ref(db, siteUserPath));
+    const existing = snap.val() || {};
+    const createdAt = existing.createdAt || user.createdAt || now();
+
+    await set(ref(db, `${siteUserPath}/nome`), user.name || '');
+    await set(ref(db, `${siteUserPath}/tag`), tag);
+    await set(ref(db, `${siteUserPath}/phone`), user.phone || '');
+    await set(ref(db, `${siteUserPath}/origem`), existing.origem || 'bot');
+    await set(ref(db, `${siteUserPath}/createdAt`), createdAt);
+
+    return {
+      ...existing,
+      nome: user.name || '',
+      tag,
+      phone: user.phone || '',
+      origem: existing.origem || 'bot',
+      createdAt,
+    };
+  }
+
   async function getOrCreateUserByPhone(phone, data = {}) {
     const cleanPhone = normalizePhone(phone);
 
@@ -129,6 +168,7 @@ function createUserService({
 
       await set(userRef, user);
       await saveShareTagIndex(shareTag, cleanPhone);
+      await ensureSiteUserRecord(user);
 
       return user;
     }
@@ -153,6 +193,7 @@ function createUserService({
     }
 
     await set(userRef, user);
+    await ensureSiteUserRecord(user);
 
     return user;
   }
@@ -183,7 +224,9 @@ function createUserService({
 
 module.exports = {
   SHARE_TAG_CODE_CHARSET,
+  SITE_DEFAULT_GROUP,
   createUserService,
   isValidEmail,
   normalizeEmail,
+  normalizeSiteLoginTag,
 };

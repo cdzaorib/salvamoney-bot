@@ -7,6 +7,7 @@ const {
   createUserService,
   isValidEmail,
   normalizeEmail,
+  normalizeSiteLoginTag,
 } = require('../src/services/user-service');
 const { createFakeFirebase } = require('./helpers/fake-firebase');
 
@@ -66,6 +67,128 @@ test('getOrCreateUserByPhone creates a user with a unique shareTag format and al
 
   assert.equal([...code].every((char) => SHARE_TAG_CODE_CHARSET.includes(char)), true);
   assert.equal(/[IO01]/.test(code), false);
+});
+
+test('getOrCreateUserByPhone creates the site login record for the generated tag', async () => {
+  const { firebase, service } = createService();
+
+  const user = await service.getOrCreateUserByPhone('55 (11) 99999-9999', {
+    name: 'João Silva',
+    email: 'joao@example.com',
+  });
+
+  assert.equal(user.shareTag, 'JOAO-ABCDEF');
+  assert.deepEqual(firebase.getValue('grupos/SALVAMONEY/usuarios/joao-abcdef'), {
+    nome: 'João Silva',
+    tag: 'joao-abcdef',
+    phone: '5511999999999',
+    origem: 'bot',
+    createdAt: '2026-05-25T12:00:00.000Z',
+  });
+});
+
+test('normalizeSiteLoginTag removes @ and spaces, lowercases, and makes a Firebase key', () => {
+  assert.equal(normalizeSiteLoginTag('@Tag'), 'tag');
+  assert.equal(normalizeSiteLoginTag(' @Ta g '), 'tag');
+  assert.equal(normalizeSiteLoginTag('@Ana.Silva#/[]'), 'ana-silva----');
+});
+
+test('site login record uses the normalized existing tag', async () => {
+  const { firebase, service } = createService({
+    seed: {
+      users: {
+        5511999999999: {
+          phone: '5511999999999',
+          name: 'Ana',
+          email: 'ana@example.com',
+          shareTag: '@Tag',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-01T00:00:00.000Z',
+        },
+      },
+    },
+  });
+
+  await service.getOrCreateUserByPhone('5511999999999');
+
+  assert.deepEqual(firebase.getValue('grupos/SALVAMONEY/usuarios/tag'), {
+    nome: 'Ana',
+    tag: 'tag',
+    phone: '5511999999999',
+    origem: 'bot',
+    createdAt: '2026-01-01T00:00:00.000Z',
+  });
+});
+
+test('site login validation can find the normalized tag under SALVAMONEY', async () => {
+  const { firebase, service } = createService();
+
+  await service.getOrCreateUserByPhone('5511999999999', {
+    name: 'Ana',
+    email: 'ana@example.com',
+  });
+
+  const snap = await firebase.ops.get('grupos/SALVAMONEY/usuarios/ana-abcdef');
+
+  assert.equal(snap.exists(), true);
+  assert.equal(snap.val().tag, 'ana-abcdef');
+});
+
+test('site login record does not overwrite existing financial data', async () => {
+  const { firebase, service } = createService({
+    seed: {
+      users: {
+        5511999999999: {
+          phone: '5511999999999',
+          name: 'Ana',
+          email: 'ana@example.com',
+          shareTag: 'ANA-ABCDEF',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-01T00:00:00.000Z',
+        },
+      },
+      grupos: {
+        SALVAMONEY: {
+          usuarios: {
+            'ana-abcdef': {
+              gastos: {
+                '2026_4': {
+                  gasto_1: {
+                    desc: 'Mercado',
+                    value: 120,
+                  },
+                },
+              },
+              fixos: {
+                fixo_1: {
+                  desc: 'Internet',
+                  value: 100,
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  await service.getOrCreateUserByPhone('5511999999999');
+
+  assert.deepEqual(firebase.getValue('grupos/SALVAMONEY/usuarios/ana-abcdef/gastos'), {
+    '2026_4': {
+      gasto_1: {
+        desc: 'Mercado',
+        value: 120,
+      },
+    },
+  });
+  assert.deepEqual(firebase.getValue('grupos/SALVAMONEY/usuarios/ana-abcdef/fixos'), {
+    fixo_1: {
+      desc: 'Internet',
+      value: 100,
+    },
+  });
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/ana-abcdef/tag'), 'ana-abcdef');
 });
 
 test('shareTags index contains only the phone field', async () => {
