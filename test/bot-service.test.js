@@ -1571,6 +1571,256 @@ test('monthly summary says when previous month history is missing and suggests p
   assert.deepEqual(firebase.removals, []);
 });
 
+test('monthly summary uses AI response when Groq returns valid text', async () => {
+  const calls = [];
+  const { firebase, service } = createService({
+    configOverrides: {
+      groqApiKey: 'fake-groq-key',
+    },
+    groqOverrides: {
+      chamarIA: async (messages) => {
+        calls.push(messages);
+
+        return 'Resumo IA: você usou 18% da renda. Dica: acompanhe alimentação.';
+      },
+    },
+    seed: {
+      grupos: {
+        SALVAMONEY: {
+          usuarios: {
+            482913: {
+              perfilFinanceiro: {
+                orcamentoMensal: 300,
+                rendaMensal: 1000,
+              },
+              fixos: {
+                internet: {
+                  value: 100,
+                },
+              },
+              gastos: {
+                [currentMonthKey()]: {
+                  almoco: {
+                    cat: 'Alimentação',
+                    desc: 'Almoço',
+                    value: 180,
+                  },
+                },
+                [monthKeyOffset(-1)]: {
+                  mercado: {
+                    cat: 'Alimentação',
+                    desc: 'Mercado',
+                    value: 100,
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'resumo mensal');
+
+  assert.equal(resposta, 'Resumo IA: você usou 18% da renda. Dica: acompanhe alimentação.');
+  assert.equal(calls.length, 1);
+  assert.match(calls[0][0].content, /Não invente números/);
+  assert.match(calls[0][0].content, /Não recomende investimentos específicos/);
+  assert.equal(firebase.pushes.length, 0);
+  assert.deepEqual(firebase.sets, []);
+  assert.deepEqual(firebase.updates, []);
+  assert.deepEqual(firebase.removals, []);
+});
+
+test('monthly summary sends structured calculated data to AI', async () => {
+  let sentSummaryData = null;
+  const { service } = createService({
+    configOverrides: {
+      groqApiKey: 'fake-groq-key',
+    },
+    groqOverrides: {
+      chamarIA: async (messages) => {
+        const jsonText = messages[1].content.match(/\{[\s\S]*\}$/)[0];
+        sentSummaryData = JSON.parse(jsonText);
+
+        return 'Resumo com IA.';
+      },
+    },
+    seed: {
+      grupos: {
+        SALVAMONEY: {
+          usuarios: {
+            482913: {
+              perfilFinanceiro: {
+                orcamentoMensal: 300,
+                rendaMensal: 1000,
+                vencimentoCartao: 12,
+              },
+              fixos: {
+                internet: {
+                  value: 100,
+                },
+                streaming: {
+                  value: 30,
+                },
+              },
+              gastos: {
+                [currentMonthKey()]: {
+                  almoco: {
+                    cat: 'Alimentação',
+                    value: 100,
+                  },
+                  uber: {
+                    cat: 'Transporte',
+                    value: 50,
+                  },
+                  cinema: {
+                    cat: 'Lazer',
+                    value: 25,
+                  },
+                  taxa: {
+                    value: 5,
+                  },
+                },
+                [monthKeyOffset(-1)]: {
+                  mercado: {
+                    cat: 'Alimentação',
+                    value: 50,
+                  },
+                  onibus: {
+                    cat: 'Transporte',
+                    value: 100,
+                  },
+                  jogo: {
+                    cat: 'Lazer',
+                    value: 25,
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+
+  await service.processarMensagem('5511999999999', 'meu resumo');
+
+  assert.equal(sentSummaryData.totalAtual, 180);
+  assert.equal(sentSummaryData.totalAnterior, 175);
+  assert.equal(sentSummaryData.variacaoPercentual, 3);
+  assert.equal(sentSummaryData.quantidadeRegistros, 4);
+  assert.deepEqual(sentSummaryData.maiorCategoria, {
+    categoria: 'Alimentação',
+    total: 100,
+  });
+  assert.deepEqual(sentSummaryData.topCategorias, [{
+    categoria: 'Alimentação',
+    total: 100,
+  }, {
+    categoria: 'Transporte',
+    total: 50,
+  }, {
+    categoria: 'Lazer',
+    total: 25,
+  }]);
+  assert.deepEqual(sentSummaryData.categoriaQueMaisSubiu, {
+    categoria: 'Alimentação',
+    diferenca: 50,
+    percentual: 100,
+    totalAtual: 100,
+    totalAnterior: 50,
+  });
+  assert.equal(sentSummaryData.rendaMensal, 1000);
+  assert.equal(sentSummaryData.orcamentoMensal, 300);
+  assert.equal(sentSummaryData.percentualRenda, 18);
+  assert.equal(sentSummaryData.percentualOrcamento, 60);
+  assert.equal(sentSummaryData.vencimentoCartao, 12);
+  assert.equal(sentSummaryData.gastosFixosTotal, 130);
+  assert.equal(sentSummaryData.temHistoricoAnterior, true);
+  assert.equal(Object.hasOwn(sentSummaryData, 'phone'), false);
+  assert.equal(Object.hasOwn(sentSummaryData, 'tag'), false);
+});
+
+test('monthly summary falls back to deterministic response when Groq fails', async () => {
+  const { firebase, service } = createService({
+    configOverrides: {
+      groqApiKey: 'fake-groq-key',
+    },
+    groqOverrides: {
+      chamarIA: async () => {
+        throw new Error('timeout');
+      },
+    },
+    seed: expenseSeed({
+      mercado: {
+        cat: 'Alimentação',
+        desc: 'Mercado',
+        value: 80,
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'resumo do mês');
+
+  assert.match(resposta, /Resumo de .+ 📊/);
+  assert.match(resposta, /Total gasto: R\$ 80,00/);
+  assert.match(resposta, /Ainda não tenho histórico suficiente/);
+  assert.equal(firebase.pushes.length, 0);
+  assert.deepEqual(firebase.sets, []);
+  assert.deepEqual(firebase.updates, []);
+  assert.deepEqual(firebase.removals, []);
+});
+
+test('monthly summary falls back without Groq configuration and does not call AI', async () => {
+  let called = false;
+  const { service } = createService({
+    groqOverrides: {
+      chamarIA: async () => {
+        called = true;
+
+        return 'não deveria chamar';
+      },
+    },
+    seed: expenseSeed({
+      mercado: {
+        cat: 'Alimentação',
+        desc: 'Mercado',
+        value: 80,
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'resumo mensal');
+
+  assert.equal(called, false);
+  assert.match(resposta, /Total gasto: R\$ 80,00/);
+});
+
+test('monthly summary does not call AI when there are no current expenses', async () => {
+  let called = false;
+  const { service } = createService({
+    configOverrides: {
+      groqApiKey: 'fake-groq-key',
+    },
+    groqOverrides: {
+      chamarIA: async () => {
+        called = true;
+
+        return 'não deveria chamar';
+      },
+    },
+    seed: expenseSeed(),
+    session: { group: 'SALVAMONEY', user: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'relatório do mês');
+
+  assert.equal(resposta, 'Você ainda não tem gastos registrados neste mês.');
+  assert.equal(called, false);
+});
+
 test('normal text expense asks to link an account after sair da conta', async () => {
   const { firebase, service } = createStatefulService({
     initialSession: { group: 'SALVAMONEY', user: '482913' },

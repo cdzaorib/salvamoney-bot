@@ -308,9 +308,11 @@ function createBotService({
     firebaseOps: { get, ref, update },
   });
   const monthlySummaryService = createMonthlySummaryService({
+    config,
     dateUtils,
     db,
     firebaseOps: { get, ref },
+    groq,
   });
   const userService = providedUserService || createUserService({
     db,

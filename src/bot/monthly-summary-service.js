@@ -105,6 +105,14 @@ function comparisonLine(currentTotal, previousTotal) {
     : `Comparado ao mês passado, seus gastos caíram ${percent}%.`;
 }
 
+function percentChange(currentTotal, previousTotal) {
+  if (!previousTotal || previousTotal <= 0) {
+    return null;
+  }
+
+  return Math.round(((currentTotal - previousTotal) / previousTotal) * 100);
+}
+
 function categoryTrendLine(currentByCategory, previousByCategory) {
   const categoryNames = new Set([
     ...Object.keys(currentByCategory || {}),
@@ -148,6 +156,39 @@ function categoryTrendLine(currentByCategory, previousByCategory) {
     : '';
 }
 
+function categoryTrend(currentByCategory, previousByCategory) {
+  const categoryNames = new Set([
+    ...Object.keys(currentByCategory || {}),
+    ...Object.keys(previousByCategory || {}),
+  ]);
+  const trends = [];
+
+  categoryNames.forEach((name) => {
+    const current = Number(currentByCategory[name] || 0);
+    const previous = Number(previousByCategory[name] || 0);
+
+    if (previous <= 0 || current === previous) {
+      return;
+    }
+
+    trends.push({
+      categoria: name,
+      diferenca: Math.round((current - previous) * 100) / 100,
+      percentual: Math.round(((current - previous) / previous) * 100),
+      totalAtual: Math.round(current * 100) / 100,
+      totalAnterior: Math.round(previous * 100) / 100,
+    });
+  });
+
+  return trends
+    .filter((trend) => trend.diferenca > 0)
+    .sort((a, b) => b.diferenca - a.diferenca)[0] ||
+    trends
+      .filter((trend) => trend.diferenca < 0)
+      .sort((a, b) => a.diferenca - b.diferenca)[0] ||
+    null;
+}
+
 function profileUsageLine(summary, profile) {
   const rendaMensal = validPositiveNumber(profile?.rendaMensal);
   const orcamentoMensal = validPositiveNumber(profile?.orcamentoMensal);
@@ -170,6 +211,94 @@ function profileUsageLine(summary, profile) {
   }
 
   return `Você usou ${parts[0]} e ${parts[1]}.`;
+}
+
+function buildSummaryData({
+  currentSummary,
+  dateUtils,
+  fixedTotal,
+  hasPreviousHistory,
+  previousSummary,
+  profile,
+}) {
+  const rendaMensal = validPositiveNumber(profile?.rendaMensal);
+  const orcamentoMensal = validPositiveNumber(profile?.orcamentoMensal);
+  const vencimentoCartao = Number(profile?.vencimentoCartao);
+
+  return {
+    monthLabel: monthName(dateUtils),
+    totalAtual: currentSummary.total,
+    totalAnterior: hasPreviousHistory ? previousSummary.total : null,
+    variacaoPercentual: hasPreviousHistory
+      ? percentChange(currentSummary.total, previousSummary.total)
+      : null,
+    quantidadeRegistros: currentSummary.count,
+    topCategorias: currentSummary.categories.slice(0, 3).map((category) => ({
+      categoria: category.name,
+      total: Math.round(category.value * 100) / 100,
+    })),
+    maiorCategoria: currentSummary.topCategory
+      ? {
+        categoria: currentSummary.topCategory.name,
+        total: Math.round(currentSummary.topCategory.value * 100) / 100,
+      }
+      : null,
+    categoriaQueMaisSubiu: hasPreviousHistory
+      ? categoryTrend(currentSummary.byCategory, previousSummary.byCategory)
+      : null,
+    rendaMensal,
+    orcamentoMensal,
+    percentualRenda: rendaMensal
+      ? Math.round((currentSummary.total / rendaMensal) * 100)
+      : null,
+    percentualOrcamento: orcamentoMensal
+      ? Math.round((currentSummary.total / orcamentoMensal) * 100)
+      : null,
+    vencimentoCartao: Number.isInteger(vencimentoCartao) && vencimentoCartao >= 1 && vencimentoCartao <= 31
+      ? vencimentoCartao
+      : null,
+    gastosFixosTotal: Math.round(Number(fixedTotal || 0) * 100) / 100,
+    temHistoricoAnterior: hasPreviousHistory,
+  };
+}
+
+function buildAiPrompt(summaryData) {
+  return [
+    {
+      role: 'system',
+      content: [
+        'Você escreve o resumo mensal do SalvaMoney em português brasileiro.',
+        'Use apenas os números recebidos nos dados estruturados.',
+        'Não invente números, categorias, datas ou percentuais.',
+        'Não faça os cálculos principais; eles já foram feitos.',
+        'Não recomende investimentos específicos.',
+        'Dê no máximo 2 dicas práticas.',
+        'Se não houver dados suficientes, diga isso claramente.',
+        'Não cite que recebeu JSON ou dados estruturados.',
+        'Não use tom alarmista.',
+        'Seja direto, amigável e curto.',
+      ].join('\n'),
+    },
+    {
+      role: 'user',
+      content: `Dados do resumo mensal:\n${JSON.stringify(summaryData, null, 2)}`,
+    },
+  ];
+}
+
+async function buildAiMonthlySummary({ config, deterministicMessage, groq, summaryData }) {
+  if (!config?.groqApiKey || !groq?.chamarIA || summaryData.quantidadeRegistros <= 0) {
+    return deterministicMessage;
+  }
+
+  try {
+    const response = await groq.chamarIA(buildAiPrompt(summaryData));
+    const cleanResponse = String(response || '').trim();
+
+    return cleanResponse || deterministicMessage;
+  } catch (_) {
+    return deterministicMessage;
+  }
 }
 
 function cardLines(profile, dateUtils) {
@@ -264,9 +393,11 @@ function buildMonthlySummaryMessage({
 }
 
 function createMonthlySummaryService({
+  config,
   dateUtils,
   db,
   firebaseOps,
+  groq,
   transactionStore: providedTransactionStore,
 }) {
   const { get, ref } = firebaseOps;
@@ -309,13 +440,22 @@ function createMonthlySummaryService({
     const previousSummary = summarizeExpenses(previousExpenses);
     const fixedTotal = fixedExpenses.reduce((total, item) => total + Number(item.value || 0), 0);
 
-    return buildMonthlySummaryMessage({
+    const messageInput = {
       currentSummary,
       dateUtils,
       fixedTotal,
       hasPreviousHistory: previousSummary.count > 0,
       previousSummary,
       profile,
+    };
+    const deterministicMessage = buildMonthlySummaryMessage(messageInput);
+    const summaryData = buildSummaryData(messageInput);
+
+    return await buildAiMonthlySummary({
+      config,
+      deterministicMessage,
+      groq,
+      summaryData,
     });
   }
 
@@ -326,6 +466,8 @@ function createMonthlySummaryService({
 
 module.exports = {
   MONTHLY_SUMMARY_REQUIRED_MESSAGE,
+  buildAiPrompt,
+  buildSummaryData,
   buildMonthlySummaryMessage,
   createMonthlySummaryService,
   isMonthlySummaryCommand,
