@@ -2,7 +2,6 @@
 
 const { normalizeText } = require('./text-utils');
 
-const AI_TIMEOUT_MS = 8000;
 const CONFIDENCE_THRESHOLD = 0.75;
 const ALLOWED_INTENTS = new Set([
   'register_expense',
@@ -129,18 +128,22 @@ function unknownClassification(confidence = 0, reason = 'Confiança baixa ou int
 }
 
 function parseIntentRouterResponse(response) {
-  const text = String(response || '').trim();
-
-  if (!text || !text.startsWith('{') || !text.endsWith('}')) {
-    return null;
-  }
-
   let parsed;
 
-  try {
-    parsed = JSON.parse(text);
-  } catch (_) {
-    return null;
+  if (response && typeof response === 'object' && !Array.isArray(response)) {
+    parsed = response;
+  } else {
+    const text = String(response || '').trim();
+
+    if (!text || !text.startsWith('{') || !text.endsWith('}')) {
+      return null;
+    }
+
+    try {
+      parsed = JSON.parse(text);
+    } catch (_) {
+      return null;
+    }
   }
 
   const confidence = safeNumber(parsed.confidence);
@@ -162,21 +165,6 @@ function parseIntentRouterResponse(response) {
   };
 }
 
-async function withTimeout(promise, timeoutMs = AI_TIMEOUT_MS) {
-  let timeout;
-
-  try {
-    return await Promise.race([
-      promise,
-      new Promise((_, reject) => {
-        timeout = setTimeout(() => reject(new Error('timeout')), timeoutMs);
-      }),
-    ]);
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
 function logClassification(logger, classification) {
   if (!classification || !logger?.info) {
     return;
@@ -189,27 +177,26 @@ function logClassification(logger, classification) {
 }
 
 function createIntentRouterService({
-  config,
-  groq,
+  aiProviderRouter,
   logger,
 }) {
   async function classificarIntencao(text) {
-    if (!config?.groqApiKey || !groq?.chamarIA || shouldSkipIntentRouter(text)) {
+    if (!aiProviderRouter?.generateJson || shouldSkipIntentRouter(text)) {
       return null;
     }
 
-    try {
-      const response = await withTimeout(groq.chamarIA(buildIntentRouterPrompt(text)));
-      const classification = parseIntentRouterResponse(response);
+    const response = await aiProviderRouter.generateJson({
+      task: 'intent_router',
+      messages: buildIntentRouterPrompt(text),
+      fallback: null,
+    });
+    const classification = parseIntentRouterResponse(response);
 
-      if (classification) {
-        logClassification(logger, classification);
-      }
-
-      return classification;
-    } catch (_) {
-      return null;
+    if (classification) {
+      logClassification(logger, classification);
     }
+
+    return classification;
   }
 
   return {

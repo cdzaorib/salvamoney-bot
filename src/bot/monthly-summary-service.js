@@ -286,19 +286,16 @@ function buildAiPrompt(summaryData) {
   ];
 }
 
-async function buildAiMonthlySummary({ config, deterministicMessage, groq, summaryData }) {
-  if (!config?.groqApiKey || !groq?.chamarIA || summaryData.quantidadeRegistros <= 0) {
+async function buildAiMonthlySummary({ aiProviderRouter, deterministicMessage, summaryData }) {
+  if (!aiProviderRouter?.generateText || summaryData.quantidadeRegistros <= 0) {
     return deterministicMessage;
   }
 
-  try {
-    const response = await groq.chamarIA(buildAiPrompt(summaryData));
-    const cleanResponse = String(response || '').trim();
-
-    return cleanResponse || deterministicMessage;
-  } catch (_) {
-    return deterministicMessage;
-  }
+  return await aiProviderRouter.generateText({
+    task: 'monthly_summary',
+    messages: buildAiPrompt(summaryData),
+    fallback: deterministicMessage,
+  });
 }
 
 function cardLines(profile, dateUtils) {
@@ -393,11 +390,10 @@ function buildMonthlySummaryMessage({
 }
 
 function createMonthlySummaryService({
-  config,
+  aiProviderRouter,
   dateUtils,
   db,
   firebaseOps,
-  groq,
   transactionStore: providedTransactionStore,
 }) {
   const { get, ref } = firebaseOps;
@@ -452,9 +448,8 @@ function createMonthlySummaryService({
     const summaryData = buildSummaryData(messageInput);
 
     return await buildAiMonthlySummary({
-      config,
+      aiProviderRouter,
       deterministicMessage,
-      groq,
       summaryData,
     });
   }

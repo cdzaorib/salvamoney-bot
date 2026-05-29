@@ -6,7 +6,6 @@ const { DEFAULT_GROUP, normalizeAccessTag } = require('../services/user-service'
 const { normalizeText } = require('./text-utils');
 
 const SAVINGS_GOAL_REQUIRED_MESSAGE = 'Entre com sua tag de 6 dígitos usando: entrar 123456';
-const AI_TIMEOUT_MS = 8000;
 const MONEY_PATTERN_TEXT = '(?:R\\$\\s*)?(?:\\d{1,3}(?:\\.\\d{3})+|\\d+)(?:[,.]\\d{1,2})?';
 const MONEY_PATTERN = new RegExp(MONEY_PATTERN_TEXT, 'i');
 
@@ -193,34 +192,16 @@ function buildGoalPrompt(data) {
   ];
 }
 
-async function withTimeout(promise, timeoutMs = AI_TIMEOUT_MS) {
-  let timeout;
-
-  try {
-    return await Promise.race([
-      promise,
-      new Promise((_, reject) => {
-        timeout = setTimeout(() => reject(new Error('timeout')), timeoutMs);
-      }),
-    ]);
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function buildGoalTip({ config, fallbackTip, groq, tipData }) {
-  if (!config?.groqApiKey || !groq?.chamarIA) {
+async function buildGoalTip({ aiProviderRouter, fallbackTip, tipData }) {
+  if (!aiProviderRouter?.generateText) {
     return fallbackTip;
   }
 
-  try {
-    const response = await withTimeout(groq.chamarIA(buildGoalPrompt(tipData)));
-    const cleanResponse = String(response || '').trim();
-
-    return cleanResponse || fallbackTip;
-  } catch (_) {
-    return fallbackTip;
-  }
+  return await aiProviderRouter.generateText({
+    task: 'savings_goal_tip',
+    messages: buildGoalPrompt(tipData),
+    fallback: fallbackTip,
+  });
 }
 
 function goalStatusLine(analysis) {
@@ -257,11 +238,10 @@ function goalProgressMessage({ analysis, goal, tip }) {
 }
 
 function createSavingsGoalService({
-  config,
+  aiProviderRouter,
   dateUtils,
   db,
   firebaseOps,
-  groq,
   now = () => new Date().toISOString(),
   transactionStore: providedTransactionStore,
 }) {
@@ -327,9 +307,8 @@ function createSavingsGoalService({
     const analysis = buildGoalAnalysis({ expenses, goal, profile });
     const fallbackTip = deterministicTip(analysis);
     const tip = await buildGoalTip({
-      config,
+      aiProviderRouter,
       fallbackTip,
-      groq,
       tipData: {
         valorMeta: analysis.valorMeta,
         totalGasto: analysis.totalGasto,

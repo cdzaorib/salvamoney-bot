@@ -5,7 +5,6 @@ const { DEFAULT_GROUP, normalizeAccessTag } = require('../services/user-service'
 const { normalizeText } = require('./text-utils');
 
 const FINANCIAL_ADVISOR_REQUIRED_MESSAGE = 'Entre com sua tag de 6 dígitos usando: entrar 123456';
-const AI_TIMEOUT_MS = 8000;
 
 function normalizedCommand(value) {
   return normalizeText(value).trim().replace(/[?!.]+$/g, '').replace(/\s+/g, ' ');
@@ -276,42 +275,23 @@ function buildDeterministicAdvice(data) {
   return lines.join('\n');
 }
 
-async function withTimeout(promise, timeoutMs = AI_TIMEOUT_MS) {
-  let timeout;
-
-  try {
-    return await Promise.race([
-      promise,
-      new Promise((_, reject) => {
-        timeout = setTimeout(() => reject(new Error('timeout')), timeoutMs);
-      }),
-    ]);
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function buildAiAdvice({ config, deterministicMessage, groq, advisorData }) {
-  if (!config?.groqApiKey || !groq?.chamarIA) {
+async function buildAiAdvice({ aiProviderRouter, deterministicMessage, advisorData }) {
+  if (!aiProviderRouter?.generateText) {
     return deterministicMessage;
   }
 
-  try {
-    const response = await withTimeout(groq.chamarIA(buildAdvisorPrompt(advisorData)));
-    const cleanResponse = String(response || '').trim();
-
-    return cleanResponse || deterministicMessage;
-  } catch (_) {
-    return deterministicMessage;
-  }
+  return await aiProviderRouter.generateText({
+    task: 'financial_advice',
+    messages: buildAdvisorPrompt(advisorData),
+    fallback: deterministicMessage,
+  });
 }
 
 function createFinancialAdvisorService({
-  config,
+  aiProviderRouter,
   dateUtils,
   db,
   firebaseOps,
-  groq,
   transactionStore: providedTransactionStore,
 }) {
   const { get, ref } = firebaseOps;
@@ -357,9 +337,8 @@ function createFinancialAdvisorService({
     const deterministicMessage = buildDeterministicAdvice(advisorData);
 
     return await buildAiAdvice({
-      config,
+      aiProviderRouter,
       deterministicMessage,
-      groq,
       advisorData,
     });
   }

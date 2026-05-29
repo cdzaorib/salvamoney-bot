@@ -1,5 +1,6 @@
 'use strict';
 
+const { createAiProviderRouter } = require('./ai/ai-provider-router');
 const {
   isDeleteCommand,
   isHelpCommand,
@@ -320,31 +321,31 @@ function createBotService({
     db,
     firebaseOps: { get, ref, update },
   });
-  const monthlySummaryService = createMonthlySummaryService({
+  const aiProviderRouter = createAiProviderRouter({
     config,
+    groq,
+  });
+  const monthlySummaryService = createMonthlySummaryService({
+    aiProviderRouter,
     dateUtils,
     db,
     firebaseOps: { get, ref },
-    groq,
   });
   const financialAdvisorService = createFinancialAdvisorService({
-    config,
+    aiProviderRouter,
     dateUtils,
     db,
     firebaseOps: { get, ref },
-    groq,
   });
   const intentRouterService = createIntentRouterService({
-    config,
-    groq,
+    aiProviderRouter,
     logger,
   });
   const savingsGoalService = createSavingsGoalService({
-    config,
+    aiProviderRouter,
     dateUtils,
     db,
     firebaseOps: { get, ref, update },
-    groq,
   });
   const alertService = createAlertService({
     dateUtils,

@@ -2,6 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { createAiProviderRouter } = require('../src/ai/ai-provider-router');
 const {
   buildIntentRouterPrompt,
   createIntentRouterService,
@@ -15,7 +16,7 @@ function createRouter({
   onPrompt,
 } = {}) {
   let calls = 0;
-  const service = createIntentRouterService({
+  const aiProviderRouter = createAiProviderRouter({
     config,
     groq: {
       chamarIA: async (prompt) => {
@@ -28,6 +29,9 @@ function createRouter({
         return response;
       },
     },
+  });
+  const service = createIntentRouterService({
+    aiProviderRouter,
     logger: { info: () => {} },
   });
 
