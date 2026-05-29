@@ -2822,6 +2822,256 @@ test('canceling a sent charge updates both copies and notifies the destination',
   assert.deepEqual(firebase.sets, []);
 });
 
+test('marking an accepted sent charge as paid updates both copies and notifies the destination', async () => {
+  const notifications = [];
+  const charge = {
+    id: 'c1',
+    descricao: 'Almoço',
+    valorCobrado: 80,
+    tagOrigem: '482913',
+    nomeOrigem: 'Carlos',
+    phoneOrigem: '5511999999999',
+    tagDestino: '123456',
+    nomeDestino: 'Anna',
+    phoneDestino: '5511888888888',
+    status: 'aceita',
+    createdAt: '2026-05-02T12:00:00.000Z',
+  };
+  const { firebase, service } = createService({
+    notificationSender: async (phone, message) => {
+      notifications.push({ phone, message });
+    },
+    seed: chargeUsersSeed({
+      origin: {
+        fixos: {
+          internet: {
+            desc: 'Internet',
+            value: 100,
+          },
+        },
+      },
+      originCharges: {
+        c1: charge,
+      },
+      destinationCharges: {
+        c1: charge,
+      },
+      gastos: {
+        antigo: {
+          desc: 'Mercado',
+          value: 45,
+        },
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'recebi cobrança 1');
+
+  assert.equal(resposta, [
+    'Cobrança marcada como paga ✅',
+    'Almoço — R$ 80,00',
+  ].join('\n'));
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/status'), 'paga');
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/status'), 'paga');
+  assert.equal(typeof firebase.getValue('grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/paidAt'), 'string');
+  assert.deepEqual(firebase.updates.map((write) => write.path), [
+    'grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1',
+    'grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1',
+  ]);
+  assert.deepEqual(Object.keys(firebase.updates[0].value).sort(), ['paidAt', 'status', 'updatedAt']);
+  assert.deepEqual(notifications, [{
+    phone: '5511888888888',
+    message: 'Carlos marcou como paga a cobrança de R$ 80,00 referente a Almoço.',
+  }]);
+  assert.equal(firebase.pushes.length, 0);
+  assert.deepEqual(firebase.sets, []);
+  assert.equal(firebase.getValue(`grupos/SALVAMONEY/usuarios/482913/gastos/${currentMonthKey()}/antigo/value`), 45);
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/fixos/internet/value'), 100);
+});
+
+test('marking an accepted received charge as paid updates both copies and notifies the origin', async () => {
+  const notifications = [];
+  const charge = {
+    id: 'c1',
+    descricao: 'Almoço',
+    valorCobrado: 80,
+    tagOrigem: '482913',
+    nomeOrigem: 'Carlos',
+    phoneOrigem: '5511999999999',
+    tagDestino: '123456',
+    nomeDestino: 'Anna',
+    phoneDestino: '5511888888888',
+    status: 'aceita',
+    createdAt: '2026-05-02T12:00:00.000Z',
+  };
+  const { firebase, service } = createService({
+    notificationSender: async (phone, message) => {
+      notifications.push({ phone, message });
+    },
+    seed: chargeUsersSeed({
+      originCharges: {
+        c1: charge,
+      },
+      destination: {
+        gastos: {
+          [currentMonthKey()]: {
+            antigo: {
+              desc: 'Farmácia',
+              value: 30,
+            },
+          },
+        },
+      },
+      destinationCharges: {
+        c1: charge,
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '123456', tag: '123456' },
+  });
+  const resposta = await service.processarMensagem('5511888888888', 'paguei a cobrança 1');
+
+  assert.equal(resposta, [
+    'Cobrança marcada como paga ✅',
+    'Almoço — R$ 80,00',
+  ].join('\n'));
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/status'), 'paga');
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/status'), 'paga');
+  assert.deepEqual(firebase.updates.map((write) => write.path), [
+    'grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1',
+    'grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1',
+  ]);
+  assert.deepEqual(notifications, [{
+    phone: '5511999999999',
+    message: 'Anna marcou como paga a cobrança de R$ 80,00 referente a Almoço.',
+  }]);
+  assert.equal(firebase.pushes.length, 0);
+  assert.deepEqual(firebase.sets, []);
+  assert.equal(firebase.getValue(`grupos/SALVAMONEY/usuarios/123456/gastos/${currentMonthKey()}/antigo/value`), 30);
+});
+
+test('marking a pending charge as paid is blocked', async () => {
+  const charge = {
+    id: 'c1',
+    descricao: 'Almoço',
+    valorCobrado: 80,
+    tagOrigem: '482913',
+    nomeOrigem: 'Carlos',
+    tagDestino: '123456',
+    nomeDestino: 'Anna',
+    status: 'pendente',
+    createdAt: '2026-05-02T12:00:00.000Z',
+  };
+  const { firebase, service } = createService({
+    seed: chargeUsersSeed({
+      destinationCharges: {
+        c1: charge,
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '123456', tag: '123456' },
+  });
+  const resposta = await service.processarMensagem('5511888888888', 'paguei cobrança 1');
+
+  assert.equal(resposta, 'Essa cobrança ainda está pendente e não pode ser marcada como paga.');
+  assertNoFirebaseWrites(firebase);
+});
+
+test('marking a declined charge as paid is blocked', async () => {
+  const charge = {
+    id: 'c1',
+    descricao: 'Almoço',
+    valorCobrado: 80,
+    tagOrigem: '482913',
+    nomeOrigem: 'Carlos',
+    tagDestino: '123456',
+    nomeDestino: 'Anna',
+    status: 'recusada',
+    createdAt: '2026-05-02T12:00:00.000Z',
+  };
+  const { firebase, service } = createService({
+    seed: chargeUsersSeed({
+      destinationCharges: {
+        c1: charge,
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '123456', tag: '123456' },
+  });
+  const resposta = await service.processarMensagem('5511888888888', 'paguei cobrança 1');
+
+  assert.equal(resposta, 'Essa cobrança está recusada e não pode ser marcada como paga.');
+  assertNoFirebaseWrites(firebase);
+});
+
+test('marking a canceled charge as paid is blocked', async () => {
+  const charge = {
+    id: 'c1',
+    descricao: 'Almoço',
+    valorCobrado: 80,
+    tagOrigem: '482913',
+    nomeOrigem: 'Carlos',
+    tagDestino: '123456',
+    nomeDestino: 'Anna',
+    status: 'cancelada',
+    createdAt: '2026-05-02T12:00:00.000Z',
+  };
+  const { firebase, service } = createService({
+    seed: chargeUsersSeed({
+      originCharges: {
+        c1: charge,
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'recebi cobrança 1');
+
+  assert.equal(resposta, 'Essa cobrança está cancelada e não pode ser marcada como paga.');
+  assertNoFirebaseWrites(firebase);
+});
+
+test('ambiguous paid charge command asks the user to list charges first', async () => {
+  const receivedCharge = {
+    id: 'c1',
+    descricao: 'Almoço',
+    valorCobrado: 80,
+    tagOrigem: '123456',
+    nomeOrigem: 'Anna',
+    tagDestino: '482913',
+    nomeDestino: 'Carlos',
+    status: 'aceita',
+    createdAt: '2026-05-02T12:00:00.000Z',
+  };
+  const sentCharge = {
+    id: 'c2',
+    descricao: 'Cinema',
+    valorCobrado: 40,
+    tagOrigem: '482913',
+    nomeOrigem: 'Carlos',
+    tagDestino: '123456',
+    nomeDestino: 'Anna',
+    status: 'aceita',
+    createdAt: '2026-05-03T12:00:00.000Z',
+  };
+  const { firebase, service } = createService({
+    seed: chargeUsersSeed({
+      originCharges: {
+        c2: sentCharge,
+      },
+      origin: {
+        cobrancasRecebidas: {
+          c1: receivedCharge,
+        },
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'marcar cobrança 1 como paga');
+
+  assert.equal(
+    resposta,
+    'Essa cobrança pode estar nas recebidas ou enviadas. Liste primeiro com: cobranças recebidas ou cobranças enviadas.'
+  );
+  assertNoFirebaseWrites(firebase);
+});
+
 test('accepting an already answered charge is blocked', async () => {
   const charge = {
     id: 'c1',

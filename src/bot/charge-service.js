@@ -293,11 +293,47 @@ function parseChargeCancelCommand(command) {
   };
 }
 
+function parseChargePaidCommand(command) {
+  let match = command.match(/^paguei(?:\s+a)?\s+cobranca\s+(\d+)$/);
+
+  if (match) {
+    return {
+      action: 'mark_paid',
+      index: Number(match[1]),
+      scope: 'received',
+    };
+  }
+
+  match = command.match(/^recebi(?:\s+o\s+pagamento\s+da)?\s+cobranca\s+(\d+)$/);
+
+  if (match) {
+    return {
+      action: 'mark_paid',
+      index: Number(match[1]),
+      scope: 'sent',
+    };
+  }
+
+  match = command.match(/^marcar\s+cobranca\s+(\d+)\s+como\s+paga$/) ||
+    command.match(/^marcar\s+como\s+paga\s+(\d+)$/);
+
+  if (match) {
+    return {
+      action: 'mark_paid',
+      index: Number(match[1]),
+      scope: 'auto',
+    };
+  }
+
+  return null;
+}
+
 function parseChargeCommand(text) {
   const command = normalizedCommand(text);
 
   return parseChargeListCommand(command) ||
     parseChargeResponseCommand(command) ||
+    parseChargePaidCommand(command) ||
     parseChargeCancelCommand(command) ||
     parseChargeCreateCommand(text);
 }
@@ -406,6 +442,10 @@ function canceledNotificationMessage(charge) {
   return `${charge.nomeOrigem || charge.tagOrigem} cancelou a cobrança de ${formatMoney(charge.valorCobrado)} referente a ${charge.descricao || 'Cobrança'}.`;
 }
 
+function paidNotificationMessage(charge, actorName) {
+  return `${actorName} marcou como paga a cobrança de ${formatMoney(charge.valorCobrado)} referente a ${charge.descricao || 'Cobrança'}.`;
+}
+
 function createdChargeMessage(charge, registeredExpense, notified) {
   const lines = [
     'Cobrança criada ✅',
@@ -431,6 +471,21 @@ function responseMessage(charge, status) {
 
 function cancelMessage(charge) {
   return `Cobrança cancelada: ${charge.descricao || 'Cobrança'} — ${formatMoney(charge.valorCobrado)}.`;
+}
+
+function paidMessage(charge) {
+  return [
+    'Cobrança marcada como paga ✅',
+    `${charge.descricao || 'Cobrança'} — ${formatMoney(charge.valorCobrado)}`,
+  ].join('\n');
+}
+
+function paidBlockedMessage(status) {
+  if (status === 'pendente') {
+    return 'Essa cobrança ainda está pendente e não pode ser marcada como paga.';
+  }
+
+  return `Essa cobrança está ${status || 'indisponível'} e não pode ser marcada como paga.`;
 }
 
 function createChargeService({
@@ -689,6 +744,82 @@ function createChargeService({
     return cancelMessage(selected);
   }
 
+  async function selectChargeForPayment(tag, command) {
+    if (command.scope === 'received') {
+      return {
+        charge: (await listReceivedCharges(tag))[command.index - 1] || null,
+        type: 'received',
+      };
+    }
+
+    if (command.scope === 'sent') {
+      return {
+        charge: (await listSentCharges(tag))[command.index - 1] || null,
+        type: 'sent',
+      };
+    }
+
+    const [received, sent] = await Promise.all([
+      listReceivedCharges(tag),
+      listSentCharges(tag),
+    ]);
+    const receivedCharge = received[command.index - 1] || null;
+    const sentCharge = sent[command.index - 1] || null;
+
+    if (receivedCharge && sentCharge) {
+      return {
+        ambiguous: true,
+      };
+    }
+
+    return {
+      charge: receivedCharge || sentCharge,
+      type: receivedCharge ? 'received' : 'sent',
+    };
+  }
+
+  async function markChargeAsPaid(session, command) {
+    const tag = normalizeAccessTag(session.tag || session.user);
+    const selected = await selectChargeForPayment(tag, command);
+
+    if (selected.ambiguous) {
+      return 'Essa cobrança pode estar nas recebidas ou enviadas. Liste primeiro com: cobranças recebidas ou cobranças enviadas.';
+    }
+
+    if (!selected.charge) {
+      return 'Não encontrei essa cobrança. Liste primeiro com: cobranças recebidas ou cobranças enviadas.';
+    }
+
+    if (selected.charge.status !== 'aceita') {
+      return paidBlockedMessage(selected.charge.status);
+    }
+
+    try {
+      await updateChargeCopies(selected.charge, {
+        status: 'paga',
+        paidAt: now(),
+      });
+    } catch (err) {
+      console.error('Erro ao marcar cobrança como paga:', err.response?.data || err.message || err);
+
+      return 'Não consegui atualizar as duas cópias da cobrança. Tente novamente.';
+    }
+
+    if (selected.type === 'received') {
+      await notify(
+        selected.charge.phoneOrigem,
+        paidNotificationMessage(selected.charge, selected.charge.nomeDestino || selected.charge.tagDestino)
+      );
+    } else {
+      await notify(
+        selected.charge.phoneDestino,
+        paidNotificationMessage(selected.charge, selected.charge.nomeOrigem || selected.charge.tagOrigem)
+      );
+    }
+
+    return paidMessage(selected.charge);
+  }
+
   async function processarCobranca(session, text) {
     const command = parseChargeCommand(text);
 
@@ -722,6 +853,10 @@ function createChargeService({
 
     if (command.action === 'cancel') {
       return await cancelCharge(session, command);
+    }
+
+    if (command.action === 'mark_paid') {
+      return await markChargeAsPaid(session, command);
     }
 
     return null;
