@@ -1913,6 +1913,274 @@ test('monthly summary does not call AI when there are no current expenses', asyn
   assert.equal(called, false);
 });
 
+test('financial advisor without a valid tag session asks to enter', async () => {
+  const { firebase, service } = createService({
+    seed: expenseSeed(),
+    session: { group: 'SALVAMONEY', user: 'carlos' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'onde posso economizar?');
+
+  assert.equal(resposta, 'Entre com sua tag de 6 dígitos usando: entrar 123456');
+  assertNoFirebaseWrites(firebase);
+});
+
+test('financial advisor answers open questions with Groq and structured data', async () => {
+  const messages = [];
+  const { firebase, service } = createService({
+    configOverrides: {
+      groqApiKey: 'fake-groq-key',
+    },
+    groqOverrides: {
+      chamarIA: async (prompt) => {
+        messages.push(prompt);
+
+        return 'Seu maior ponto de atenção é Alimentação. Sugestões: defina um teto semanal e acompanhe o cartão.';
+      },
+    },
+    seed: expenseMonthsSeed({
+      [currentMonthKey()]: {
+        delivery: {
+          cat: 'Alimentação',
+          date: todayIso(),
+          desc: 'Delivery',
+          value: 150,
+        },
+        mercado: {
+          cat: 'Alimentação',
+          date: todayIso(),
+          desc: 'Mercado',
+          value: 300,
+        },
+        uber: {
+          cat: 'Transporte',
+          date: todayIso(),
+          desc: 'Uber',
+          value: 150,
+        },
+      },
+      [monthKeyOffset(-1)]: {
+        delivery_antigo: {
+          cat: 'Alimentação',
+          date: isoDayOffset(-30),
+          desc: 'Delivery antigo',
+          value: 100,
+        },
+        uber_antigo: {
+          cat: 'Transporte',
+          date: isoDayOffset(-30),
+          desc: 'Uber antigo',
+          value: 200,
+        },
+      },
+    }, {
+      alertas: {
+        alimentacao: {
+          ativo: true,
+          categoria: 'Alimentação',
+          limite: 500,
+          tipo: 'categoria',
+        },
+      },
+      fixos: {
+        internet: {
+          desc: 'Internet',
+          value: 100,
+        },
+      },
+      perfilFinanceiro: {
+        orcamentoMensal: 1000,
+        rendaMensal: 3000,
+        vencimentoCartao: 12,
+      },
+      phone: '5511999999999',
+      tag: '482913',
+    }),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'onde posso economizar?');
+  const prompt = messages[0];
+  const userMessage = prompt.find((message) => message.role === 'user').content;
+  const advisorData = JSON.parse(userMessage.slice(userMessage.indexOf('{')));
+
+  assert.equal(resposta, 'Seu maior ponto de atenção é Alimentação. Sugestões: defina um teto semanal e acompanhe o cartão.');
+  assert.equal(messages.length, 1);
+  assert.equal(advisorData.totalMesAtual, 600);
+  assert.equal(advisorData.totalMesAnterior, 300);
+  assert.equal(advisorData.variacaoPercentual, 100);
+  assert.deepEqual(advisorData.categoriasMesAtual[0], {
+    categoria: 'Alimentação',
+    percentualDoMes: 75,
+    total: 450,
+  });
+  assert.equal(advisorData.gastosFixosTotal, 100);
+  assert.equal(advisorData.rendaMensal, 3000);
+  assert.equal(advisorData.orcamentoMensal, 1000);
+  assert.equal(advisorData.percentualRendaUsado, 20);
+  assert.equal(advisorData.percentualOrcamentoUsado, 60);
+  assert.equal(advisorData.vencimentoCartao, 12);
+  assert.equal(advisorData.perguntaUsuario, 'onde posso economizar?');
+  assert.deepEqual(advisorData.alertasAtivos, [{
+    categoria: 'Alimentação',
+    limite: 500,
+    tipo: 'categoria',
+  }]);
+  assert.doesNotMatch(JSON.stringify(prompt), /5511999999999|482913/);
+  assertNoFirebaseWrites(firebase);
+});
+
+test('financial advisor handles delivery analysis questions', async () => {
+  let called = false;
+  const { firebase, service } = createService({
+    configOverrides: {
+      groqApiKey: 'fake-groq-key',
+    },
+    groqOverrides: {
+      chamarIA: async () => {
+        called = true;
+
+        return 'Delivery está dentro de Alimentação. Revise frequência e valor médio antes de cortar tudo.';
+      },
+    },
+    seed: expenseSeed({
+      delivery: {
+        cat: 'Alimentação',
+        date: todayIso(),
+        desc: 'Delivery',
+        value: 90,
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'estou gastando muito com delivery?');
+
+  assert.equal(called, true);
+  assert.equal(resposta, 'Delivery está dentro de Alimentação. Revise frequência e valor médio antes de cortar tudo.');
+  assertNoFirebaseWrites(firebase);
+});
+
+test('financial advisor falls back when Groq fails', async () => {
+  const { firebase, service } = createService({
+    configOverrides: {
+      groqApiKey: 'fake-groq-key',
+    },
+    groqOverrides: {
+      chamarIA: async () => {
+        throw new Error('groq indisponível');
+      },
+    },
+    seed: expenseSeed({
+      mercado: {
+        cat: 'Alimentação',
+        date: todayIso(),
+        desc: 'Mercado',
+        value: 180,
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'como estou financeiramente?');
+
+  assert.match(resposta, /Ainda não consegui gerar uma análise avançada agora, mas pelo seu resumo atual:/);
+  assert.match(resposta, /Total do mês: R\$ 180,00/);
+  assert.match(resposta, /Maior categoria: Alimentação/);
+  assertNoFirebaseWrites(firebase);
+});
+
+test('financial advisor falls back without Groq configuration', async () => {
+  let called = false;
+  const { firebase, service } = createService({
+    groqOverrides: {
+      chamarIA: async () => {
+        called = true;
+
+        return 'não deveria chamar';
+      },
+    },
+    seed: expenseSeed({
+      uber: {
+        cat: 'Transporte',
+        date: todayIso(),
+        desc: 'Uber',
+        value: 40,
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'me ajude a economizar esse mês');
+
+  assert.equal(called, false);
+  assert.match(resposta, /Ainda não consegui gerar uma análise avançada agora/);
+  assert.match(resposta, /Total do mês: R\$ 40,00/);
+  assertNoFirebaseWrites(firebase);
+});
+
+test('financial advisor does not capture normal expense commands', async () => {
+  let called = false;
+  const { firebase, service } = createService({
+    configOverrides: {
+      groqApiKey: 'fake-groq-key',
+    },
+    groqOverrides: {
+      chamarIA: async () => {
+        called = true;
+
+        throw new Error('advisor should not run');
+      },
+    },
+    seed: expenseSeed(),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'gastei 20 no mercado');
+
+  assert.equal(called, false);
+  assert.match(resposta, /registrado/i);
+  assert.equal(firebase.pushes.length, 1);
+});
+
+test('financial advisor does not capture charge commands', async () => {
+  let called = false;
+  const { service } = createService({
+    configOverrides: {
+      groqApiKey: 'fake-groq-key',
+    },
+    groqOverrides: {
+      chamarIA: async () => {
+        called = true;
+
+        throw new Error('advisor should not run');
+      },
+    },
+    seed: chargeUsersSeed(),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'cobrar 80 da tag 123456');
+
+  assert.equal(called, false);
+  assert.match(resposta, /Cobrança criada/);
+});
+
+test('financial advisor does not capture delete commands', async () => {
+  let called = false;
+  const { service } = createService({
+    configOverrides: {
+      groqApiKey: 'fake-groq-key',
+    },
+    groqOverrides: {
+      chamarIA: async () => {
+        called = true;
+
+        throw new Error('advisor should not run');
+      },
+    },
+    seed: deleteSelectionSeed(),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'apagar mercado');
+
+  assert.equal(called, false);
+  assert.match(resposta, /Encontrei estes gastos parecidos/);
+});
+
 test('expense query without a valid tag session asks to enter', async () => {
   const { firebase, service } = createService({
     seed: expenseSeed(),

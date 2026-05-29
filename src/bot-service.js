@@ -16,6 +16,7 @@ const { createChargeService } = require('./bot/charge-service');
 const { MESES, createDateUtils } = require('./bot/date-utils');
 const { createExpenseService } = require('./bot/expense-service');
 const { createExpenseQueryService } = require('./bot/expense-query-service');
+const { createFinancialAdvisorService } = require('./bot/financial-advisor-service');
 const { createFinancialProfileService } = require('./bot/financial-profile-service');
 const { createFixedExpenseService } = require('./bot/fixed-expense-service');
 const { createMonthlySummaryService } = require('./bot/monthly-summary-service');
@@ -317,6 +318,13 @@ function createBotService({
     firebaseOps: { get, ref, update },
   });
   const monthlySummaryService = createMonthlySummaryService({
+    config,
+    dateUtils,
+    db,
+    firebaseOps: { get, ref },
+    groq,
+  });
+  const financialAdvisorService = createFinancialAdvisorService({
     config,
     dateUtils,
     db,
@@ -823,6 +831,12 @@ function createBotService({
         return respostaPerfilFinanceiro;
       }
 
+      const respostaAdvisorFinanceiro = await financialAdvisorService.processarAdvisorFinanceiro(sessao, msg);
+
+      if (respostaAdvisorFinanceiro) {
+        return respostaAdvisorFinanceiro;
+      }
+
       return `${TAG_ACCOUNT_REQUIRED_MESSAGE}
 
 🌐 Site:
@@ -859,6 +873,12 @@ ${SITE_URL}`;
 
     if (respostaPerfilFinanceiro) {
       return respostaPerfilFinanceiro;
+    }
+
+    const respostaAdvisorFinanceiro = await financialAdvisorService.processarAdvisorFinanceiro(sessaoComPhone, msg);
+
+    if (respostaAdvisorFinanceiro) {
+      return respostaAdvisorFinanceiro;
     }
 
     // ── ÁUDIO ──
