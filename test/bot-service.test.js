@@ -1431,6 +1431,146 @@ test('financial profile command without a valid tag session asks to enter', asyn
   assert.deepEqual(firebase.updates, []);
 });
 
+test('monthly summary command without a valid tag session asks to enter', async () => {
+  const { firebase, service } = createService({
+    seed: expenseSeed(),
+    session: { group: 'SALVAMONEY', user: 'carlos' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'resumo mensal');
+
+  assert.equal(resposta, 'Entre com sua tag de 6 dígitos usando: entrar 123456');
+  assert.equal(firebase.pushes.length, 0);
+  assert.deepEqual(firebase.sets, []);
+  assert.deepEqual(firebase.updates, []);
+  assert.deepEqual(firebase.removals, []);
+});
+
+test('monthly summary without current expenses answers clearly and writes nothing', async () => {
+  const { firebase, service } = createService({
+    seed: expenseSeed(),
+    session: { group: 'SALVAMONEY', user: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'relatório do mês');
+
+  assert.equal(resposta, 'Você ainda não tem gastos registrados neste mês.');
+  assert.equal(firebase.pushes.length, 0);
+  assert.deepEqual(firebase.sets, []);
+  assert.deepEqual(firebase.updates, []);
+  assert.deepEqual(firebase.removals, []);
+});
+
+test('monthly summary reports totals, categories, profile usage, card and previous month comparison', async () => {
+  const { firebase, service } = createService({
+    seed: {
+      grupos: {
+        SALVAMONEY: {
+          usuarios: {
+            482913: {
+              perfilFinanceiro: {
+                orcamentoMensal: 300,
+                rendaMensal: 1000,
+                vencimentoCartao: 12,
+              },
+              fixos: {
+                internet: {
+                  desc: 'Internet',
+                  value: 100,
+                },
+                streaming: {
+                  desc: 'Streaming',
+                  value: 30,
+                },
+              },
+              gastos: {
+                [currentMonthKey()]: {
+                  almoco: {
+                    cat: 'Alimentação',
+                    desc: 'Almoço',
+                    value: 100,
+                  },
+                  uber: {
+                    cat: 'Transporte',
+                    desc: 'Uber',
+                    value: 50,
+                  },
+                  cinema: {
+                    cat: 'Lazer',
+                    desc: 'Cinema',
+                    value: 25,
+                  },
+                  taxa: {
+                    desc: 'Taxa',
+                    value: 5,
+                  },
+                },
+                [monthKeyOffset(-1)]: {
+                  mercado: {
+                    cat: 'Alimentação',
+                    desc: 'Mercado',
+                    value: 50,
+                  },
+                  onibus: {
+                    cat: 'Transporte',
+                    desc: 'Ônibus',
+                    value: 100,
+                  },
+                  jogo: {
+                    cat: 'Lazer',
+                    desc: 'Jogo',
+                    value: 25,
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'como estou indo esse mês?');
+
+  assert.match(resposta, /Resumo de .+ 📊/);
+  assert.match(resposta, /Total gasto: R\$ 180,00/);
+  assert.match(resposta, /Registros: 4/);
+  assert.match(resposta, /Maior categoria: Alimentação - R\$ 100,00/);
+  assert.match(resposta, /Gastos fixos cadastrados: R\$ 130,00/);
+  assert.match(resposta, /1\. Alimentação - R\$ 100,00/);
+  assert.match(resposta, /2\. Transporte - R\$ 50,00/);
+  assert.match(resposta, /3\. Lazer - R\$ 25,00/);
+  assert.match(resposta, /Você usou 18% da sua renda mensal e 60% do seu orçamento\./);
+  assert.match(resposta, /Comparado ao mês passado, seus gastos subiram 3%\./);
+  assert.match(resposta, /Alimentação foi a categoria que mais cresceu: subiu 100%/);
+  assert.match(resposta, /Seu cartão vence dia 12\./);
+  assert.match(resposta, /Dica: acompanhe Alimentação/);
+  assert.equal(firebase.pushes.length, 0);
+  assert.deepEqual(firebase.sets, []);
+  assert.deepEqual(firebase.updates, []);
+  assert.deepEqual(firebase.removals, []);
+});
+
+test('monthly summary says when previous month history is missing and suggests profile setup', async () => {
+  const { firebase, service } = createService({
+    seed: expenseSeed({
+      mercado: {
+        cat: 'Alimentação',
+        desc: 'Mercado',
+        value: 80,
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'análise do mês');
+
+  assert.match(resposta, /Total gasto: R\$ 80,00/);
+  assert.match(resposta, /Ainda não tenho histórico suficiente para comparar com o mês passado\./);
+  assert.match(resposta, /Para análises melhores, me diga sua renda com: recebo 3000 todo dia 5/);
+  assert.equal(firebase.pushes.length, 0);
+  assert.deepEqual(firebase.sets, []);
+  assert.deepEqual(firebase.updates, []);
+  assert.deepEqual(firebase.removals, []);
+});
+
 test('normal text expense asks to link an account after sair da conta', async () => {
   const { firebase, service } = createStatefulService({
     initialSession: { group: 'SALVAMONEY', user: '482913' },

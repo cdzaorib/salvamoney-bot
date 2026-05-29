@@ -15,6 +15,7 @@ const { MESES, createDateUtils } = require('./bot/date-utils');
 const { createExpenseService } = require('./bot/expense-service');
 const { createFinancialProfileService } = require('./bot/financial-profile-service');
 const { createFixedExpenseService } = require('./bot/fixed-expense-service');
+const { createMonthlySummaryService } = require('./bot/monthly-summary-service');
 const { normalizeText } = require('./bot/text-utils');
 const { parsearGasto, parsearParcelamento } = require('./expense-parser');
 const {
@@ -305,6 +306,11 @@ function createBotService({
   const financialProfileService = createFinancialProfileService({
     db,
     firebaseOps: { get, ref, update },
+  });
+  const monthlySummaryService = createMonthlySummaryService({
+    dateUtils,
+    db,
+    firebaseOps: { get, ref },
   });
   const userService = providedUserService || createUserService({
     db,
@@ -652,6 +658,7 @@ function createBotService({
         '',
         '📊 *Resumo:*',
         '_resumo_ ou _quanto gastei?_',
+        '_resumo mensal_',
         '',
         '🧭 *Perfil financeiro:*',
         '_recebo 3000 todo dia 5_',
@@ -713,6 +720,12 @@ function createBotService({
 
     // ── SEM SESSÃO VÁLIDA ──
     if (!hasValidAccessSession(sessao)) {
+      const respostaResumoMensal = await monthlySummaryService.processarResumoMensal(sessao, msg);
+
+      if (respostaResumoMensal) {
+        return respostaResumoMensal;
+      }
+
       const respostaPerfilFinanceiro = await financialProfileService.processarPerfilFinanceiro(sessao, msg);
 
       if (respostaPerfilFinanceiro) {
@@ -726,6 +739,12 @@ ${SITE_URL}`;
     }
 
     const sessaoComPhone = sessionWithPhone(sessao, phone);
+
+    const respostaResumoMensal = await monthlySummaryService.processarResumoMensal(sessaoComPhone, msg);
+
+    if (respostaResumoMensal) {
+      return respostaResumoMensal;
+    }
 
     const respostaPerfilFinanceiro = await financialProfileService.processarPerfilFinanceiro(sessaoComPhone, msg);
 
