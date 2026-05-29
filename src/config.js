@@ -2,7 +2,7 @@
 
 const config = {
   jsonLimit: process.env.JSON_LIMIT || '25mb',
-  siteUrl: process.env.SITE_URL || 'https://cdzaorib.github.io/Salvamoney2.0/',
+  siteUrl: process.env.SITE_URL || 'https://cdzaorib.github.io/Salvamoney-site/',
   webhookToken: String(process.env.WEBHOOK_TOKEN || ''),
   dashboardToken: String(process.env.DASHBOARD_TOKEN || ''),
   logSensitiveData: process.env.LOG_SENSITIVE_DATA === 'true',

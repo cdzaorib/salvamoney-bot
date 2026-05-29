@@ -13,6 +13,7 @@ const { createAiMediaService } = require('./bot/ai-media-service');
 const { detectarCategoria } = require('./bot/categories');
 const { MESES, createDateUtils } = require('./bot/date-utils');
 const { createExpenseService } = require('./bot/expense-service');
+const { createFinancialProfileService } = require('./bot/financial-profile-service');
 const { createFixedExpenseService } = require('./bot/fixed-expense-service');
 const { normalizeText } = require('./bot/text-utils');
 const { parsearGasto, parsearParcelamento } = require('./expense-parser');
@@ -300,6 +301,10 @@ function createBotService({
     dateUtils,
     db,
     firebaseOps: { get, push, ref, remove, set },
+  });
+  const financialProfileService = createFinancialProfileService({
+    db,
+    firebaseOps: { get, ref, update },
   });
   const userService = providedUserService || createUserService({
     db,
@@ -648,6 +653,12 @@ function createBotService({
         '📊 *Resumo:*',
         '_resumo_ ou _quanto gastei?_',
         '',
+        '🧭 *Perfil financeiro:*',
+        '_recebo 3000 todo dia 5_',
+        '_meu cartão vence dia 12_',
+        '_definir orçamento 2000_',
+        '_meu perfil financeiro_',
+        '',
         '📅 *Hoje:*',
         '_quanto gastei hoje?_',
         '',
@@ -702,6 +713,12 @@ function createBotService({
 
     // ── SEM SESSÃO VÁLIDA ──
     if (!hasValidAccessSession(sessao)) {
+      const respostaPerfilFinanceiro = await financialProfileService.processarPerfilFinanceiro(sessao, msg);
+
+      if (respostaPerfilFinanceiro) {
+        return respostaPerfilFinanceiro;
+      }
+
       return `${TAG_ACCOUNT_REQUIRED_MESSAGE}
 
 🌐 Site:
@@ -709,6 +726,12 @@ ${SITE_URL}`;
     }
 
     const sessaoComPhone = sessionWithPhone(sessao, phone);
+
+    const respostaPerfilFinanceiro = await financialProfileService.processarPerfilFinanceiro(sessaoComPhone, msg);
+
+    if (respostaPerfilFinanceiro) {
+      return respostaPerfilFinanceiro;
+    }
 
     // ── ÁUDIO ──
     if (mediaInfo?.type === 'audio') {

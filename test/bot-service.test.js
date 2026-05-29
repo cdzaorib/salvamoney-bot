@@ -9,7 +9,7 @@ const { createFakeFirebase } = require('./helpers/fake-firebase');
 const config = {
   groqApiKey: '',
   monthIndexMode: 'zero',
-  siteUrl: 'https://site.example/',
+  siteUrl: 'https://cdzaorib.github.io/Salvamoney-site/',
   timeZone: 'UTC',
 };
 
@@ -528,6 +528,7 @@ test('oi returns help without external services', async () => {
   const resposta = await service.processarMensagem('5511999999999', 'oi');
 
   assert.match(resposta, /SalvaMoney Bot/);
+  assert.match(resposta, /https:\/\/cdzaorib\.github\.io\/Salvamoney-site\//);
   assert.match(resposta, /Você ainda não vinculou uma conta/);
 });
 
@@ -1301,6 +1302,133 @@ test('normal text expense still works when signup is not active', async () => {
       sourcePath: `${firebase.pushes[0].path}/push_1`,
     },
   }]);
+});
+
+test('recebo 3000 por mes saves monthly income in the financial profile', async () => {
+  const { firebase, service } = createService({
+    seed: expenseSeed(),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'recebo 3000 por mês');
+
+  assert.equal(resposta, [
+    'Perfil atualizado ✅',
+    'Renda mensal: R$ 3.000,00',
+  ].join('\n'));
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/perfilFinanceiro/rendaMensal'), 3000);
+  assert.equal(typeof firebase.getValue('grupos/SALVAMONEY/usuarios/482913/perfilFinanceiro/updatedAt'), 'string');
+  assert.deepEqual(firebase.updates.map((write) => write.path), [
+    'grupos/SALVAMONEY/usuarios/482913/perfilFinanceiro',
+  ]);
+  assert.equal(firebase.pushes.length, 0);
+});
+
+test('recebo dia 5 saves the receiving day without requiring income', async () => {
+  const { firebase, service } = createService({
+    seed: expenseSeed(),
+    session: { group: 'SALVAMONEY', user: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'recebo dia 5');
+
+  assert.equal(resposta, [
+    'Perfil atualizado ✅',
+    'Dia de recebimento: 5',
+  ].join('\n'));
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/perfilFinanceiro/diaRecebimento'), 5);
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/perfilFinanceiro/rendaMensal'), undefined);
+});
+
+test('cartao vence todo dia 12 saves the card due day', async () => {
+  const { firebase, service } = createService({
+    seed: expenseSeed(),
+    session: { group: 'SALVAMONEY', user: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'meu cartão vence dia 12');
+
+  assert.equal(resposta, [
+    'Perfil atualizado ✅',
+    'Vencimento do cartão: dia 12',
+  ].join('\n'));
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/perfilFinanceiro/vencimentoCartao'), 12);
+});
+
+test('definir orcamento 2000 saves the monthly budget', async () => {
+  const { firebase, service } = createService({
+    seed: expenseSeed(),
+    session: { group: 'SALVAMONEY', user: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'definir orçamento 2000');
+
+  assert.equal(resposta, [
+    'Perfil atualizado ✅',
+    'Orçamento mensal: R$ 2.000,00',
+  ].join('\n'));
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/perfilFinanceiro/orcamentoMensal'), 2000);
+  assert.equal(firebase.pushes.length, 0);
+});
+
+test('meu perfil financeiro reads the saved financial profile', async () => {
+  const { firebase, service } = createService({
+    seed: {
+      grupos: {
+        SALVAMONEY: {
+          usuarios: {
+            482913: {
+              perfilFinanceiro: {
+                diaRecebimento: 5,
+                orcamentoMensal: 2000,
+                rendaMensal: 3000,
+                vencimentoCartao: 12,
+              },
+            },
+          },
+        },
+      },
+    },
+    session: { group: 'SALVAMONEY', user: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'meu perfil financeiro');
+
+  assert.equal(resposta, [
+    'Seu perfil financeiro:',
+    'Renda mensal: R$ 3.000,00',
+    'Dia de recebimento: 5',
+    'Vencimento do cartão: dia 12',
+    'Orçamento mensal: R$ 2.000,00',
+  ].join('\n'));
+  assert.equal(firebase.pushes.length, 0);
+  assert.deepEqual(firebase.updates, []);
+});
+
+test('financial profile update does not overwrite existing financial children', async () => {
+  const { firebase, service } = createService({
+    seed: protectedAccountSeed(),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'recebo 3000 todo dia 5');
+
+  assert.equal(resposta, [
+    'Perfil atualizado ✅',
+    'Renda mensal: R$ 3.000,00',
+    'Dia de recebimento: 5',
+  ].join('\n'));
+  assertProtectedFinancialData(firebase);
+  assert.equal(firebase.sets.some((write) => write.path === 'grupos/SALVAMONEY/usuarios/482913'), false);
+  assert.deepEqual(firebase.updates.map((write) => write.path), [
+    'grupos/SALVAMONEY/usuarios/482913/perfilFinanceiro',
+  ]);
+});
+
+test('financial profile command without a valid tag session asks to enter', async () => {
+  const { firebase, service } = createService({
+    seed: expenseSeed(),
+    session: { group: 'SALVAMONEY', user: 'carlos' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'recebo 3000 por mês');
+
+  assert.equal(resposta, 'Entre com sua tag de 6 dígitos usando: entrar 123456');
+  assert.equal(firebase.pushes.length, 0);
+  assert.deepEqual(firebase.updates, []);
 });
 
 test('normal text expense asks to link an account after sair da conta', async () => {
