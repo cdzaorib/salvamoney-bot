@@ -42,5 +42,10 @@ test('parsearParcelamento handles amount before and after description', () => {
     desc: 'notebook',
     parcelas: 10,
   });
+  assert.deepEqual(parsearParcelamento('gastei 120 em 3x no cartão'), {
+    valor: 120,
+    desc: 'cartão',
+    parcelas: 3,
+  });
   assert.equal(parsearParcelamento('paguei notebook a vista'), null);
 });

@@ -39,7 +39,7 @@ function isDeleteCommand(message) {
 }
 
 function isParcelamento(message) {
-  return /parcelei|parcelado|comprei parcelado/i.test(message);
+  return /parcelei|parcelado|comprei parcelado|\bem\s+\d+\s*x\b/i.test(message);
 }
 
 module.exports = {

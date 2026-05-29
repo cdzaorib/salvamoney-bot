@@ -79,6 +79,18 @@ function parsearParcelamento(texto) {
     };
   }
 
+  m = String(texto || '').match(
+    /(?:gastei|paguei|comprei)\s+([\d.,]+)\s+em\s+(\d+)\s*[xX]\s+(?:no|na|em)\s+(.+)/i
+  );
+
+  if (m) {
+    return {
+      valor: parseMoney(m[1]),
+      desc: m[3].trim(),
+      parcelas: parseInt(m[2], 10),
+    };
+  }
+
   return null;
 }
 

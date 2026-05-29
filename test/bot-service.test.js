@@ -619,9 +619,12 @@ test('oi returns help without external services', async () => {
   const { service } = createService();
   const resposta = await service.processarMensagem('5511999999999', 'oi');
 
-  assert.match(resposta, /SalvaMoney Bot/);
+  assert.match(resposta, /Olá, eu sou o SalvaMoney/);
+  assert.match(resposta, /- gastei 120 em 3x no cartão/);
+  assert.match(resposta, /- onde posso economizar\?/);
+  assert.match(resposta, /- recebi cobrança 1/);
   assert.match(resposta, /https:\/\/cdzaorib\.github\.io\/Salvamoney-site\//);
-  assert.match(resposta, /Você ainda não vinculou uma conta/);
+  assert.doesNotMatch(resposta, /Você ainda não vinculou uma conta/);
 });
 
 test('criar codigo without name returns tag-only instructions', async () => {
@@ -4197,6 +4200,20 @@ test('parcelamento rounds installment values for 100 in 3x using the site-compat
     assert.equal(push.value.origem, 'bot');
     assert.equal(push.value.parcela, undefined);
   });
+});
+
+test('parcelamento accepts the help menu example with amount before installments', async () => {
+  const { firebase, service } = createService({
+    seed: expenseSeed(),
+    session: { group: 'SALVAMONEY', user: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'gastei 120 em 3x no cartão');
+
+  assert.match(resposta, /3x de R\$ 40,00/);
+  assert.equal(firebase.pushes.length, 3);
+  assert.equal(firebase.pushes[0].value.desc, 'cartão (1/3x)');
+  assert.equal(firebase.pushes[0].value.value, 40);
+  assert.equal(firebase.pushes[0].value.user, '482913');
 });
 
 test('audio transcription can register parcelamento through the current text flow', async () => {
