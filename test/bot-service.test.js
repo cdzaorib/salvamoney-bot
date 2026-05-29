@@ -2184,6 +2184,215 @@ test('financial advisor does not capture delete commands', async () => {
   assert.match(resposta, /Encontrei estes gastos parecidos/);
 });
 
+test('savings goal without a valid tag session asks to enter', async () => {
+  const { firebase, service } = createService({
+    seed: expenseSeed(),
+    session: { group: 'SALVAMONEY', user: 'carlos' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'minha meta');
+
+  assert.equal(resposta, 'Entre com sua tag de 6 dígitos usando: entrar 123456');
+  assertNoFirebaseWrites(firebase);
+});
+
+test('creates a monthly savings goal without overwriting financial data', async () => {
+  const { firebase, service } = createService({
+    seed: expenseMonthsSeed({
+      [currentMonthKey()]: {
+        mercado: {
+          cat: 'Alimentação',
+          date: todayIso(),
+          desc: 'Mercado',
+          value: 120,
+        },
+      },
+    }, {
+      fixos: {
+        internet: {
+          desc: 'Internet',
+          value: 100,
+        },
+      },
+      meta: {
+        desc: 'Meta antiga do site',
+        value: 1000,
+      },
+      perfilFinanceiro: {
+        rendaMensal: 3000,
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'criar meta de economizar 500 esse mês');
+  const goalPath = `grupos/SALVAMONEY/usuarios/482913/metasEconomia/${currentMonthKey()}`;
+  const goal = firebase.getValue(goalPath);
+
+  assert.equal(resposta, [
+    'Meta criada ✅',
+    'Você quer economizar R$ 500,00 este mês.',
+    '',
+    'Para acompanhar, envie: minha meta',
+  ].join('\n'));
+  assert.equal(goal.valorMeta, 500);
+  assert.equal(goal.descricao, 'Economia mensal');
+  assert.equal(goal.ativo, true);
+  assert.equal(typeof goal.createdAt, 'string');
+  assert.equal(typeof goal.updatedAt, 'string');
+  assert.deepEqual(firebase.updates.map((write) => write.path), [goalPath]);
+  assert.equal(firebase.updates.every((write) => write.path.includes('/metasEconomia/')), true);
+  assert.deepEqual(firebase.pushes, []);
+  assert.deepEqual(firebase.sets, []);
+  assert.deepEqual(firebase.removals, []);
+  assert.equal(firebase.getValue(`grupos/SALVAMONEY/usuarios/482913/gastos/${currentMonthKey()}/mercado/value`), 120);
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/fixos/internet/value'), 100);
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/perfilFinanceiro/rendaMensal'), 3000);
+  assert.deepEqual(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/meta'), {
+    desc: 'Meta antiga do site',
+    value: 1000,
+  });
+});
+
+test('consults a monthly savings goal with income and current month expenses', async () => {
+  let called = false;
+  const goal = {
+    ativo: true,
+    createdAt: '2026-05-01T00:00:00.000Z',
+    descricao: 'Economia mensal',
+    updatedAt: '2026-05-01T00:00:00.000Z',
+    valorMeta: 500,
+  };
+  const { firebase, service } = createService({
+    groqOverrides: {
+      chamarIA: async () => {
+        called = true;
+
+        return 'não deveria chamar sem chave';
+      },
+    },
+    seed: expenseMonthsSeed({
+      [currentMonthKey()]: {
+        mercado: {
+          cat: 'Alimentação',
+          date: todayIso(),
+          desc: 'Mercado',
+          value: 1200,
+        },
+        uber: {
+          cat: 'Transporte',
+          date: todayIso(),
+          desc: 'Uber',
+          value: 300,
+        },
+      },
+      [monthKeyOffset(-1)]: {
+        antigo: {
+          cat: 'Lazer',
+          date: isoDayOffset(-30),
+          desc: 'Cinema antigo',
+          value: 9999,
+        },
+      },
+    }, {
+      metasEconomia: {
+        [currentMonthKey()]: goal,
+      },
+      perfilFinanceiro: {
+        rendaMensal: 3000,
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'minha meta');
+
+  assert.equal(called, false);
+  assert.match(resposta, /Sua meta de economia este mês é R\$ 500,00\./);
+  assert.match(resposta, /Renda mensal: R\$ 3\.000,00/);
+  assert.match(resposta, /Gasto até agora: R\$ 1\.500,00/);
+  assert.match(resposta, /Economia projetada: R\$ 1\.500,00/);
+  assert.match(resposta, /Você está acima da meta por enquanto ✅/);
+  assert.match(resposta, /Alimentação/);
+  assertNoFirebaseWrites(firebase);
+});
+
+test('consults a monthly savings goal without income and asks for financial profile', async () => {
+  const { firebase, service } = createService({
+    seed: expenseMonthsSeed({
+      [currentMonthKey()]: {
+        mercado: {
+          cat: 'Alimentação',
+          date: todayIso(),
+          desc: 'Mercado',
+          value: 250,
+        },
+      },
+    }, {
+      metasEconomia: {
+        [currentMonthKey()]: {
+          ativo: true,
+          descricao: 'Economia mensal',
+          valorMeta: 400,
+        },
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'quanto falta para minha meta?');
+
+  assert.match(resposta, /Sua meta de economia este mês é R\$ 400,00\./);
+  assert.match(resposta, /Gasto até agora: R\$ 250,00/);
+  assert.doesNotMatch(resposta, /Renda mensal:/);
+  assert.match(resposta, /Para calcular melhor, me diga sua renda com: recebo 3000 todo dia 5/);
+  assertNoFirebaseWrites(firebase);
+});
+
+test('cancels a savings goal by deactivating the month node', async () => {
+  const goal = {
+    ativo: true,
+    createdAt: '2026-05-01T00:00:00.000Z',
+    descricao: 'Economia mensal',
+    updatedAt: '2026-05-01T00:00:00.000Z',
+    valorMeta: 700,
+  };
+  const { firebase, service } = createService({
+    seed: expenseMonthsSeed({}, {
+      metasEconomia: {
+        [currentMonthKey()]: goal,
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'cancelar meta');
+  const goalPath = `grupos/SALVAMONEY/usuarios/482913/metasEconomia/${currentMonthKey()}`;
+
+  assert.equal(resposta, 'Meta cancelada: R$ 700,00 este mês.');
+  assert.equal(firebase.getValue(`${goalPath}/ativo`), false);
+  assert.equal(typeof firebase.getValue(`${goalPath}/updatedAt`), 'string');
+  assert.deepEqual(firebase.updates.map((write) => write.path), [goalPath]);
+  assert.deepEqual(Object.keys(firebase.updates[0].value).sort(), ['ativo', 'updatedAt']);
+  assert.deepEqual(firebase.pushes, []);
+  assert.deepEqual(firebase.sets, []);
+  assert.deepEqual(firebase.removals, []);
+});
+
+test('canceled savings goal does not appear as active', async () => {
+  const { firebase, service } = createService({
+    seed: expenseMonthsSeed({}, {
+      metasEconomia: {
+        [currentMonthKey()]: {
+          ativo: false,
+          descricao: 'Economia mensal',
+          valorMeta: 700,
+        },
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'minha meta');
+
+  assert.match(resposta, /Você ainda não tem uma meta de economia ativa neste mês/);
+  assertNoFirebaseWrites(firebase);
+});
+
 test('expense query without a valid tag session asks to enter', async () => {
   const { firebase, service } = createService({
     seed: expenseSeed(),

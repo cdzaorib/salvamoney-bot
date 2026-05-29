@@ -20,6 +20,7 @@ const { createFinancialAdvisorService } = require('./bot/financial-advisor-servi
 const { createFinancialProfileService } = require('./bot/financial-profile-service');
 const { createFixedExpenseService } = require('./bot/fixed-expense-service');
 const { createMonthlySummaryService } = require('./bot/monthly-summary-service');
+const { createSavingsGoalService } = require('./bot/savings-goal-service');
 const { normalizeText } = require('./bot/text-utils');
 const { parsearGasto, parsearParcelamento } = require('./expense-parser');
 const {
@@ -329,6 +330,13 @@ function createBotService({
     dateUtils,
     db,
     firebaseOps: { get, ref },
+    groq,
+  });
+  const savingsGoalService = createSavingsGoalService({
+    config,
+    dateUtils,
+    db,
+    firebaseOps: { get, ref, update },
     groq,
   });
   const alertService = createAlertService({
@@ -809,6 +817,12 @@ function createBotService({
         return respostaPerfilFinanceiro;
       }
 
+      const respostaMetaEconomia = await savingsGoalService.processarMetaEconomia(sessao, msg);
+
+      if (respostaMetaEconomia) {
+        return respostaMetaEconomia;
+      }
+
       const respostaAdvisorFinanceiro = await financialAdvisorService.processarAdvisorFinanceiro(sessao, msg);
 
       if (respostaAdvisorFinanceiro) {
@@ -851,6 +865,12 @@ ${SITE_URL}`;
 
     if (respostaPerfilFinanceiro) {
       return respostaPerfilFinanceiro;
+    }
+
+    const respostaMetaEconomia = await savingsGoalService.processarMetaEconomia(sessaoComPhone, msg);
+
+    if (respostaMetaEconomia) {
+      return respostaMetaEconomia;
     }
 
     const respostaAdvisorFinanceiro = await financialAdvisorService.processarAdvisorFinanceiro(sessaoComPhone, msg);
