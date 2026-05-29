@@ -24,6 +24,7 @@ const { createIntentRouterService } = require('./bot/intent-router-service');
 const { createMonthlySummaryService } = require('./bot/monthly-summary-service');
 const { createSavingsGoalService } = require('./bot/savings-goal-service');
 const { normalizeText } = require('./bot/text-utils');
+const { createWeeklyPlannerService } = require('./bot/weekly-planner-service');
 const { parsearGasto, parsearParcelamento } = require('./expense-parser');
 const {
   DEFAULT_GROUP,
@@ -346,6 +347,12 @@ function createBotService({
     dateUtils,
     db,
     firebaseOps: { get, ref, update },
+  });
+  const weeklyPlannerService = createWeeklyPlannerService({
+    aiProviderRouter,
+    dateUtils,
+    db,
+    firebaseOps: { get, ref },
   });
   const alertService = createAlertService({
     dateUtils,
@@ -845,6 +852,12 @@ function createBotService({
         return respostaMetaEconomia;
       }
 
+      const respostaPlanoSemanal = await weeklyPlannerService.processarPlanoSemanal(sessao, msg);
+
+      if (respostaPlanoSemanal) {
+        return respostaPlanoSemanal;
+      }
+
       const respostaAdvisorFinanceiro = await financialAdvisorService.processarAdvisorFinanceiro(sessao, msg);
 
       if (respostaAdvisorFinanceiro) {
@@ -899,6 +912,12 @@ ${SITE_URL}`;
 
     if (respostaMetaEconomia) {
       return respostaMetaEconomia;
+    }
+
+    const respostaPlanoSemanal = await weeklyPlannerService.processarPlanoSemanal(sessaoComPhone, msg);
+
+    if (respostaPlanoSemanal) {
+      return respostaPlanoSemanal;
     }
 
     const respostaAdvisorFinanceiro = await financialAdvisorService.processarAdvisorFinanceiro(sessaoComPhone, msg);

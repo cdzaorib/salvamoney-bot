@@ -2609,6 +2609,57 @@ test('canceled savings goal does not appear as active', async () => {
   assertNoFirebaseWrites(firebase);
 });
 
+test('weekly planner without a valid tag session asks to enter', async () => {
+  const { firebase, service } = createService({
+    seed: expenseSeed(),
+    session: { group: 'SALVAMONEY', user: 'carlos' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'plano da semana');
+
+  assert.equal(resposta, 'Entre com sua tag de 6 dígitos usando: entrar 123456');
+  assertNoFirebaseWrites(firebase);
+});
+
+test('weekly planner routes weekly planning commands through AI provider router', async () => {
+  const prompts = [];
+  const { firebase, service } = createService({
+    configOverrides: {
+      groqApiKey: 'fake-groq-key',
+    },
+    groqOverrides: {
+      chamarIA: async (prompt) => {
+        prompts.push(prompt);
+
+        return 'Plano semanal: controle Alimentação e use um teto diário simples até domingo.';
+      },
+    },
+    seed: expenseMonthsSeed({
+      [currentMonthKey()]: {
+        mercado: {
+          cat: 'Alimentação',
+          date: todayIso(),
+          desc: 'Mercado',
+          value: 180,
+        },
+      },
+    }, {
+      perfilFinanceiro: {
+        orcamentoMensal: 1200,
+        rendaMensal: 3000,
+        vencimentoCartao: 12,
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'monte meu plano da semana');
+
+  assert.equal(resposta, 'Plano semanal: controle Alimentação e use um teto diário simples até domingo.');
+  assert.equal(prompts.length, 1);
+  assert.match(prompts[0][0].content, /plano financeiro semanal/);
+  assert.doesNotMatch(JSON.stringify(prompts[0]), /5511999999999|482913|fake-groq-key/);
+  assertNoFirebaseWrites(firebase);
+});
+
 test('expense query without a valid tag session asks to enter', async () => {
   const { firebase, service } = createService({
     seed: expenseSeed(),
