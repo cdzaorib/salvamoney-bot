@@ -68,6 +68,20 @@ function todayIso() {
   return `${parts.year}-${parts.month}-${parts.day}`;
 }
 
+function isoDayOffset(offset) {
+  const parts = utcDateParts();
+  const date = new Date(Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day) + offset, 12));
+  const offsetParts = utcDateParts(date);
+
+  return `${offsetParts.year}-${offsetParts.month}-${offsetParts.day}`;
+}
+
+function monthKeyForIso(isoDate) {
+  const [year, month] = String(isoDate || '').split('-');
+
+  return `${year}_${Number(month) - 1}`;
+}
+
 function expenseSeed(expenses = {}) {
   return {
     grupos: {
@@ -77,6 +91,21 @@ function expenseSeed(expenses = {}) {
             gastos: {
               [currentMonthKey()]: expenses,
             },
+          },
+        },
+      },
+    },
+  };
+}
+
+function expenseMonthsSeed(gastos = {}, extraUserFields = {}) {
+  return {
+    grupos: {
+      SALVAMONEY: {
+        usuarios: {
+          482913: {
+            ...extraUserFields,
+            gastos,
           },
         },
       },
@@ -365,6 +394,13 @@ function assertProtectedFinancialData(firebase) {
       parcelas: 3,
     },
   });
+}
+
+function assertNoFirebaseWrites(firebase) {
+  assert.deepEqual(firebase.pushes, []);
+  assert.deepEqual(firebase.sets, []);
+  assert.deepEqual(firebase.updates, []);
+  assert.deepEqual(firebase.removals, []);
 }
 
 function createService({
@@ -1819,6 +1855,272 @@ test('monthly summary does not call AI when there are no current expenses', asyn
 
   assert.equal(resposta, 'Você ainda não tem gastos registrados neste mês.');
   assert.equal(called, false);
+});
+
+test('expense query without a valid tag session asks to enter', async () => {
+  const { firebase, service } = createService({
+    seed: expenseSeed(),
+    session: { group: 'SALVAMONEY', user: 'carlos' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'quanto gastei com mercado esse mês?');
+
+  assert.equal(resposta, 'Entre com sua tag de 6 dígitos usando: entrar 123456');
+  assertNoFirebaseWrites(firebase);
+});
+
+test('expense query for mercado in current month sums matching food category expenses', async () => {
+  const { firebase, service } = createService({
+    seed: expenseSeed({
+      delivery: {
+        cat: 'Alimentação',
+        date: todayIso(),
+        desc: 'Delivery',
+        value: 80.5,
+      },
+      mercado: {
+        cat: 'Alimentação',
+        date: todayIso(),
+        desc: 'Mercado Guanabara',
+        value: 120,
+      },
+      uber: {
+        cat: 'Transporte',
+        date: todayIso(),
+        desc: 'Uber',
+        value: 40,
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'quanto gastei com mercado esse mês?');
+
+  assert.match(resposta, /Você gastou R\$ 200,50 com mercado\/alimentação neste mês\./);
+  assert.match(resposta, /Registros encontrados: 2/);
+  assert.match(resposta, /1\. Mercado Guanabara - R\$ 120,00 - \d{2}\/\d{2}/);
+  assert.match(resposta, /2\. Delivery - R\$ 80,50 - \d{2}\/\d{2}/);
+  assert.doesNotMatch(resposta, /Uber/);
+  assertNoFirebaseWrites(firebase);
+});
+
+test('expense query for transport in previous month reads only previous month expenses', async () => {
+  const { firebase, service } = createService({
+    seed: expenseMonthsSeed({
+      [currentMonthKey()]: {
+        uber_atual: {
+          cat: 'Transporte',
+          date: todayIso(),
+          desc: 'Uber atual',
+          value: 999,
+        },
+      },
+      [monthKeyOffset(-1)]: {
+        mercado: {
+          cat: 'Alimentação',
+          desc: 'Mercado',
+          value: 100,
+        },
+        onibus: {
+          cat: 'Transporte',
+          desc: 'Ônibus',
+          value: 25,
+        },
+        uber: {
+          cat: 'Transporte',
+          desc: 'Uber',
+          value: 50,
+        },
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'quanto gastei com transporte mês passado?');
+
+  assert.match(resposta, /Você gastou R\$ 75,00 com Transporte no mês passado\./);
+  assert.match(resposta, /Registros encontrados: 2/);
+  assert.match(resposta, /Uber/);
+  assert.match(resposta, /Ônibus/);
+  assert.doesNotMatch(resposta, /Uber atual/);
+  assertNoFirebaseWrites(firebase);
+});
+
+test('expense query for today filters by current date', async () => {
+  const { firebase, service } = createService({
+    seed: expenseSeed({
+      hoje_1: {
+        cat: 'Alimentação',
+        date: todayIso(),
+        desc: 'Almoço',
+        value: 30,
+      },
+      hoje_2: {
+        cat: 'Transporte',
+        date: todayIso(),
+        desc: 'Uber',
+        value: 20,
+      },
+      ontem: {
+        cat: 'Lazer',
+        date: isoDayOffset(-1),
+        desc: 'Cinema ontem',
+        value: 999,
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'quanto gastei hoje?');
+
+  assert.match(resposta, /Você gastou R\$ 50,00 hoje\./);
+  assert.match(resposta, /Registros encontrados: 2/);
+  assert.doesNotMatch(resposta, /Cinema ontem/);
+  assertNoFirebaseWrites(firebase);
+});
+
+test('expense query for yesterday filters by previous date', async () => {
+  const yesterday = isoDayOffset(-1);
+  const gastos = {
+    [monthKeyForIso(yesterday)]: {
+      hoje: {
+        cat: 'Transporte',
+        date: todayIso(),
+        desc: 'Uber hoje',
+        value: 20,
+      },
+      ontem: {
+        cat: 'Alimentação',
+        date: yesterday,
+        desc: 'Mercado ontem',
+        value: 70,
+      },
+    },
+  };
+
+  if (monthKeyForIso(todayIso()) !== monthKeyForIso(yesterday)) {
+    gastos[monthKeyForIso(todayIso())] = gastos[monthKeyForIso(todayIso())] || {};
+    gastos[monthKeyForIso(todayIso())].hoje = {
+      cat: 'Transporte',
+      date: todayIso(),
+      desc: 'Uber hoje',
+      value: 20,
+    };
+  }
+
+  const { firebase, service } = createService({
+    seed: expenseMonthsSeed(gastos),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'quanto gastei ontem?');
+
+  assert.match(resposta, /Você gastou R\$ 70,00 ontem\./);
+  assert.match(resposta, /Mercado ontem/);
+  assert.doesNotMatch(resposta, /Uber hoje/);
+  assertNoFirebaseWrites(firebase);
+});
+
+test('expense query for this week filters the current week', async () => {
+  const oldDate = isoDayOffset(-8);
+  const gastos = {
+    [monthKeyForIso(todayIso())]: {
+      semana: {
+        cat: 'Lazer',
+        date: todayIso(),
+        desc: 'Cinema',
+        value: 40,
+      },
+    },
+  };
+  gastos[monthKeyForIso(oldDate)] = {
+    ...(gastos[monthKeyForIso(oldDate)] || {}),
+    antigo: {
+      cat: 'Lazer',
+      date: oldDate,
+      desc: 'Cinema antigo',
+      value: 100,
+    },
+  };
+
+  const { firebase, service } = createService({
+    seed: expenseMonthsSeed(gastos),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'quanto gastei essa semana?');
+
+  assert.match(resposta, /Você gastou R\$ 40,00 nesta semana\./);
+  assert.match(resposta, /Cinema/);
+  assert.doesNotMatch(resposta, /Cinema antigo/);
+  assertNoFirebaseWrites(firebase);
+});
+
+test('expense query without explicit period uses the current month', async () => {
+  const { firebase, service } = createService({
+    seed: expenseMonthsSeed({
+      [currentMonthKey()]: {
+        mercado_atual: {
+          cat: 'Alimentação',
+          date: todayIso(),
+          desc: 'Mercado atual',
+          value: 55,
+        },
+      },
+      [monthKeyOffset(-1)]: {
+        mercado_passado: {
+          cat: 'Alimentação',
+          desc: 'Mercado passado',
+          value: 100,
+        },
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'gastos com mercado');
+
+  assert.match(resposta, /Você gastou R\$ 55,00 com mercado\/alimentação neste mês\./);
+  assert.match(resposta, /Mercado atual/);
+  assert.doesNotMatch(resposta, /Mercado passado/);
+  assertNoFirebaseWrites(firebase);
+});
+
+test('expense query by description finds matching desc text', async () => {
+  const { firebase, service } = createService({
+    seed: expenseSeed({
+      mercado: {
+        cat: 'Alimentação',
+        date: todayIso(),
+        desc: 'Mercado',
+        value: 20,
+      },
+      pet: {
+        cat: 'Outros',
+        date: todayIso(),
+        desc: 'Pet shop',
+        value: 60,
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'gastos com pet');
+
+  assert.match(resposta, /Você gastou R\$ 60,00 com pet neste mês\./);
+  assert.match(resposta, /Pet shop/);
+  assert.doesNotMatch(resposta, /Mercado/);
+  assertNoFirebaseWrites(firebase);
+});
+
+test('expense query without results answers clearly', async () => {
+  const { firebase, service } = createService({
+    seed: expenseSeed({
+      uber: {
+        cat: 'Transporte',
+        date: todayIso(),
+        desc: 'Uber',
+        value: 20,
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'total de alimentação');
+
+  assert.equal(resposta, 'Não encontrei gastos com Alimentação neste mês.');
+  assertNoFirebaseWrites(firebase);
 });
 
 test('normal text expense asks to link an account after sair da conta', async () => {

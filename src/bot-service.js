@@ -13,6 +13,7 @@ const { createAiMediaService } = require('./bot/ai-media-service');
 const { detectarCategoria } = require('./bot/categories');
 const { MESES, createDateUtils } = require('./bot/date-utils');
 const { createExpenseService } = require('./bot/expense-service');
+const { createExpenseQueryService } = require('./bot/expense-query-service');
 const { createFinancialProfileService } = require('./bot/financial-profile-service');
 const { createFixedExpenseService } = require('./bot/fixed-expense-service');
 const { createMonthlySummaryService } = require('./bot/monthly-summary-service');
@@ -302,6 +303,11 @@ function createBotService({
     dateUtils,
     db,
     firebaseOps: { get, push, ref, remove, set },
+  });
+  const expenseQueryService = createExpenseQueryService({
+    dateUtils,
+    db,
+    firebaseOps: { get, ref },
   });
   const financialProfileService = createFinancialProfileService({
     db,
@@ -662,6 +668,10 @@ function createBotService({
         '_resumo_ ou _quanto gastei?_',
         '_resumo mensal_',
         '',
+        '🔎 *Consultar gastos:*',
+        '_quanto gastei com mercado esse mês?_',
+        '_quanto gastei ontem_',
+        '',
         '🧭 *Perfil financeiro:*',
         '_recebo 3000 todo dia 5_',
         '_meu cartão vence dia 12_',
@@ -722,6 +732,12 @@ function createBotService({
 
     // ── SEM SESSÃO VÁLIDA ──
     if (!hasValidAccessSession(sessao)) {
+      const respostaConsultaGastos = await expenseQueryService.processarConsultaGastos(sessao, msg);
+
+      if (respostaConsultaGastos) {
+        return respostaConsultaGastos;
+      }
+
       const respostaResumoMensal = await monthlySummaryService.processarResumoMensal(sessao, msg);
 
       if (respostaResumoMensal) {
@@ -746,6 +762,12 @@ ${SITE_URL}`;
 
     if (respostaResumoMensal) {
       return respostaResumoMensal;
+    }
+
+    const respostaConsultaGastos = await expenseQueryService.processarConsultaGastos(sessaoComPhone, msg);
+
+    if (respostaConsultaGastos) {
+      return respostaConsultaGastos;
     }
 
     const respostaPerfilFinanceiro = await financialProfileService.processarPerfilFinanceiro(sessaoComPhone, msg);
