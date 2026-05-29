@@ -13,6 +13,7 @@ function createFakeFirebase(seed = {}) {
   const pushes = [];
   const removals = [];
   const sets = [];
+  const updates = [];
   let nextPushId = 1;
 
   function getValue(path) {
@@ -70,6 +71,13 @@ function createFakeFirebase(seed = {}) {
       sets.push({ path, value: clone(value) });
       setValue(path, value);
     },
+    async update(path, value) {
+      updates.push({ path, value: clone(value) });
+
+      Object.entries(value || {}).forEach(([key, fieldValue]) => {
+        setValue(`${path}/${key}`, fieldValue);
+      });
+    },
   };
 
   return {
@@ -79,6 +87,7 @@ function createFakeFirebase(seed = {}) {
     pushes,
     removals,
     sets,
+    updates,
   };
 }
 

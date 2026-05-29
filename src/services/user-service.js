@@ -38,7 +38,19 @@ function createUserService({
   now = () => new Date().toISOString(),
   randomInt = crypto.randomInt,
 } = {}) {
-  const { get, ref, set } = firebaseOps || getFirebaseOps();
+  const { get, ref, set, update } = firebaseOps || getFirebaseOps();
+
+  async function safeUpdate(path, value) {
+    if (typeof update === 'function') {
+      await update(ref(db, path), value);
+
+      return;
+    }
+
+    await Promise.all(
+      Object.entries(value).map(([key, fieldValue]) => set(ref(db, `${path}/${key}`), fieldValue))
+    );
+  }
 
   async function getUserByPhone(phone) {
     const cleanPhone = normalizePhone(phone);
@@ -80,7 +92,7 @@ function createUserService({
   }
 
   async function saveShareTagIndex(tag, phone) {
-    await set(ref(db, `shareTags/${tag}`), { phone });
+    await safeUpdate(`shareTags/${tag}`, { phone });
   }
 
   async function ensureSiteUserRecord(user) {
@@ -94,14 +106,22 @@ function createUserService({
     const snap = await get(ref(db, siteUserPath));
     const existing = snap.val() || {};
     const createdAt = existing.createdAt || user.createdAt || now();
+    const updatedAt = user.updatedAt || now();
     const name = user.name || user.nome || existing.nome || '';
     const phone = user.phone || existing.phone || '';
+    const profileUpdate = {
+      nome: name,
+      tag,
+      phone,
+      origem: existing.origem || 'bot',
+      updatedAt,
+    };
 
-    await set(ref(db, `${siteUserPath}/nome`), name);
-    await set(ref(db, `${siteUserPath}/tag`), tag);
-    await set(ref(db, `${siteUserPath}/phone`), phone);
-    await set(ref(db, `${siteUserPath}/origem`), existing.origem || 'bot');
-    await set(ref(db, `${siteUserPath}/createdAt`), createdAt);
+    if (!existing.createdAt) {
+      profileUpdate.createdAt = createdAt;
+    }
+
+    await safeUpdate(siteUserPath, profileUpdate);
 
     return {
       ...existing,
@@ -110,6 +130,7 @@ function createUserService({
       phone,
       origem: existing.origem || 'bot',
       createdAt,
+      updatedAt,
     };
   }
 
@@ -139,7 +160,7 @@ function createUserService({
         updatedAt: timestamp,
       };
 
-      await set(userRef, user);
+      await safeUpdate(`users/${cleanPhone}`, user);
       await saveShareTagIndex(tag, cleanPhone);
       await ensureSiteUserRecord(user);
 
@@ -172,7 +193,7 @@ function createUserService({
       await saveShareTagIndex(existingTag, cleanPhone);
     }
 
-    await set(userRef, user);
+    await safeUpdate(`users/${cleanPhone}`, user);
     await ensureSiteUserRecord(user);
 
     return user;

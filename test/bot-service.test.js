@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createBotService } = require('../src/bot-service');
+const { createUserService } = require('../src/services/user-service');
 const { createFakeFirebase } = require('./helpers/fake-firebase');
 
 const config = {
@@ -276,14 +277,107 @@ function fixedExpenseSeed() {
   };
 }
 
+function protectedAccountSeed() {
+  return {
+    grupos: {
+      SALVAMONEY: {
+        usuarios: {
+          482913: {
+            nome: 'Carlos',
+            tag: '482913',
+            phone: '5511999999999',
+            origem: 'bot',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            gastos: {
+              [currentMonthKey()]: {
+                gasto_mercado: {
+                  cat: 'Alimentação',
+                  desc: 'Mercado',
+                  value: 120,
+                },
+              },
+            },
+            fixos: {
+              fixo_internet: {
+                desc: 'Internet',
+                value: 100,
+              },
+            },
+            limites: {
+              alimentacao: 800,
+            },
+            meta: {
+              desc: 'Reserva',
+              value: 1000,
+            },
+            orcamento: {
+              mensal: 3000,
+            },
+            parcelamentos: {
+              tv: {
+                parcelas: 3,
+              },
+            },
+          },
+        },
+      },
+    },
+    shareTags: {
+      482913: {
+        phone: '5511999999999',
+      },
+    },
+    users: {
+      5511999999999: {
+        phone: '5511999999999',
+        name: 'Carlos',
+        email: 'carlos@example.com',
+        tag: '482913',
+        shareTag: '482913',
+        createdAt: '2026-01-01T00:00:00.000Z',
+      },
+    },
+  };
+}
+
+function assertProtectedFinancialData(firebase) {
+  assert.deepEqual(firebase.getValue(`grupos/SALVAMONEY/usuarios/482913/gastos/${currentMonthKey()}/gasto_mercado`), {
+    cat: 'Alimentação',
+    desc: 'Mercado',
+    value: 120,
+  });
+  assert.deepEqual(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/fixos/fixo_internet'), {
+    desc: 'Internet',
+    value: 100,
+  });
+  assert.deepEqual(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/orcamento'), {
+    mensal: 3000,
+  });
+  assert.deepEqual(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/limites'), {
+    alimentacao: 800,
+  });
+  assert.deepEqual(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/meta'), {
+    desc: 'Reserva',
+    value: 1000,
+  });
+  assert.deepEqual(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/parcelamentos'), {
+    tv: {
+      parcelas: 3,
+    },
+  });
+}
+
 function createService({
   configOverrides = {},
   groqOverrides = {},
+  randomInt,
   seed = {},
   session = null,
+  useRealUserService = false,
   userService,
 } = {}) {
   const firebase = createFakeFirebase(seed);
+  const resolvedUserService = userService || (useRealUserService ? createRealUserService(firebase, randomInt) : undefined);
   const savedSessions = [];
   const sessionStore = {
     getSession: async () => session,
@@ -304,7 +398,7 @@ function createService({
     },
     safeLog,
     sessionStore,
-    userService,
+    userService: resolvedUserService,
   });
 
   return {
@@ -312,6 +406,15 @@ function createService({
     savedSessions,
     service,
   };
+}
+
+function createRealUserService(firebase, randomInt = () => 482913) {
+  return createUserService({
+    db: {},
+    firebaseOps: firebase.ops,
+    now: () => '2026-05-25T12:00:00.000Z',
+    randomInt,
+  });
 }
 
 function createStatefulService({
@@ -506,6 +609,58 @@ test('entrar with missing tag asks to create an account', async () => {
 
   assert.equal(resposta, 'Tag não encontrada. Crie sua conta pelo WhatsApp usando: criar conta SeuNome');
   assert.deepEqual(savedSessions, []);
+});
+
+test('criar conta preserves existing financial children on the SALVAMONEY tag node', async () => {
+  const { firebase, savedSessions, service } = createService({
+    randomInt: () => {
+      throw new Error('existing numeric tag should not be regenerated');
+    },
+    seed: protectedAccountSeed(),
+    useRealUserService: true,
+  });
+
+  const resposta = await service.processarMensagem('5511999999999', 'criar conta Carlos');
+
+  assert.match(resposta, /Você já possui uma conta/);
+  assertProtectedFinancialData(firebase);
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/createdAt'), '2026-01-01T00:00:00.000Z');
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/updatedAt'), '2026-05-25T12:00:00.000Z');
+  assert.equal(firebase.sets.some((write) => write.path === 'grupos/SALVAMONEY/usuarios/482913'), false);
+  assert.deepEqual(savedSessions, [{
+    phone: '5511999999999',
+    data: {
+      group: 'SALVAMONEY',
+      user: '482913',
+      name: 'Carlos',
+      tag: '482913',
+      updatedAt: todayIso(),
+    },
+  }]);
+});
+
+test('entrar 482913 only saves the session and preserves existing financial children', async () => {
+  const { firebase, savedSessions, service } = createService({
+    seed: protectedAccountSeed(),
+    useRealUserService: true,
+  });
+
+  const resposta = await service.processarMensagem('5511999999999', 'entrar 482913');
+
+  assert.match(resposta, /Pronto/);
+  assertProtectedFinancialData(firebase);
+  assert.deepEqual(firebase.updates, []);
+  assert.deepEqual(firebase.sets, []);
+  assert.deepEqual(savedSessions, [{
+    phone: '5511999999999',
+    data: {
+      group: 'SALVAMONEY',
+      user: '482913',
+      name: 'Carlos',
+      tag: '482913',
+      updatedAt: todayIso(),
+    },
+  }]);
 });
 
 test('criar conta starts the WhatsApp signup flow', async () => {
@@ -807,6 +962,32 @@ test('minha tag returns the existing public shareTag', async () => {
 
   assert.equal(resposta, 'Sua tag de acesso é: 482913');
   assert.equal(firebase.pushes.length, 0);
+});
+
+test('minha tag updates an old session to SALVAMONEY tag without overwriting financial children', async () => {
+  const { firebase, savedSessions, service } = createService({
+    seed: protectedAccountSeed(),
+    session: { group: 'LEGADO', user: 'Carlos' },
+    useRealUserService: true,
+  });
+
+  const resposta = await service.processarMensagem('5511999999999', 'minha tag');
+
+  assert.equal(resposta, 'Sua tag de acesso é: 482913');
+  assertProtectedFinancialData(firebase);
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/createdAt'), '2026-01-01T00:00:00.000Z');
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/updatedAt'), '2026-05-25T12:00:00.000Z');
+  assert.equal(firebase.sets.some((write) => write.path === 'grupos/SALVAMONEY/usuarios/482913'), false);
+  assert.deepEqual(savedSessions, [{
+    phone: '5511999999999',
+    data: {
+      group: 'SALVAMONEY',
+      user: '482913',
+      name: 'Carlos',
+      tag: '482913',
+      updatedAt: todayIso(),
+    },
+  }]);
 });
 
 test('natural minha tag phrases return users phone shareTag and never session user', async () => {

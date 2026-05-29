@@ -270,7 +270,7 @@ function createBotService({
   const SITE_URL = config.siteUrl;
   const TIME_ZONE = config.timeZone;
   const { getSession, saveSession } = sessionStore;
-  const { ref, get, push, set, remove } = firebaseOps || defaultFirebaseOps();
+  const { ref, get, push, set, update, remove } = firebaseOps || defaultFirebaseOps();
   const dateUtils = createDateUtils({
     monthIndexMode: config.monthIndexMode,
     timeZone: TIME_ZONE,
@@ -303,7 +303,7 @@ function createBotService({
   });
   const userService = providedUserService || createUserService({
     db,
-    firebaseOps: { get, ref, set },
+    firebaseOps: { get, ref, set, update },
   });
   const accountService = createAccountService({
     db,

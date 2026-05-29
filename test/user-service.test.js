@@ -121,6 +121,7 @@ test('getOrCreateUserByPhone creates the site login record for the generated tag
     phone: '5511999999999',
     origem: 'bot',
     createdAt: '2026-05-25T12:00:00.000Z',
+    updatedAt: '2026-05-25T12:00:00.000Z',
   });
 });
 
@@ -156,6 +157,7 @@ test('site login record does not overwrite existing financial data', async () =>
         SALVAMONEY: {
           usuarios: {
             482913: {
+              createdAt: '2026-01-01T00:00:00.000Z',
               gastos: {
                 '2026_4': {
                   gasto_1: {
@@ -168,6 +170,21 @@ test('site login record does not overwrite existing financial data', async () =>
                 fixo_1: {
                   desc: 'Internet',
                   value: 100,
+                },
+              },
+              limites: {
+                alimentacao: 800,
+              },
+              meta: {
+                desc: 'Reserva',
+                value: 1000,
+              },
+              orcamento: {
+                mensal: 3000,
+              },
+              parcelamentos: {
+                tv: {
+                  parcelas: 3,
                 },
               },
             },
@@ -193,7 +210,25 @@ test('site login record does not overwrite existing financial data', async () =>
       value: 100,
     },
   });
+  assert.deepEqual(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/orcamento'), {
+    mensal: 3000,
+  });
+  assert.deepEqual(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/limites'), {
+    alimentacao: 800,
+  });
+  assert.deepEqual(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/meta'), {
+    desc: 'Reserva',
+    value: 1000,
+  });
+  assert.deepEqual(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/parcelamentos'), {
+    tv: {
+      parcelas: 3,
+    },
+  });
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/createdAt'), '2026-01-01T00:00:00.000Z');
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/updatedAt'), '2026-05-25T12:00:00.000Z');
   assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/tag'), '482913');
+  assert.equal(firebase.sets.some((write) => write.path === 'grupos/SALVAMONEY/usuarios/482913'), false);
 });
 
 test('shareTags index contains only the phone field', async () => {
