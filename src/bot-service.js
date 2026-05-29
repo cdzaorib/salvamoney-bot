@@ -25,6 +25,7 @@ const { createMonthlySummaryService } = require('./bot/monthly-summary-service')
 const { createSavingsGoalService } = require('./bot/savings-goal-service');
 const { normalizeText } = require('./bot/text-utils');
 const { createWeeklyPlannerService } = require('./bot/weekly-planner-service');
+const { createWeeklyReportService } = require('./bot/weekly-report-service');
 const { parsearGasto, parsearParcelamento } = require('./expense-parser');
 const {
   DEFAULT_GROUP,
@@ -349,6 +350,12 @@ function createBotService({
     firebaseOps: { get, ref, update },
   });
   const weeklyPlannerService = createWeeklyPlannerService({
+    aiProviderRouter,
+    dateUtils,
+    db,
+    firebaseOps: { get, ref },
+  });
+  const weeklyReportService = createWeeklyReportService({
     aiProviderRouter,
     dateUtils,
     db,
@@ -858,6 +865,12 @@ function createBotService({
         return respostaPlanoSemanal;
       }
 
+      const respostaRelatorioSemanal = await weeklyReportService.processarRelatorioSemanal(sessao, msg);
+
+      if (respostaRelatorioSemanal) {
+        return respostaRelatorioSemanal;
+      }
+
       const respostaAdvisorFinanceiro = await financialAdvisorService.processarAdvisorFinanceiro(sessao, msg);
 
       if (respostaAdvisorFinanceiro) {
@@ -918,6 +931,12 @@ ${SITE_URL}`;
 
     if (respostaPlanoSemanal) {
       return respostaPlanoSemanal;
+    }
+
+    const respostaRelatorioSemanal = await weeklyReportService.processarRelatorioSemanal(sessaoComPhone, msg);
+
+    if (respostaRelatorioSemanal) {
+      return respostaRelatorioSemanal;
     }
 
     const respostaAdvisorFinanceiro = await financialAdvisorService.processarAdvisorFinanceiro(sessaoComPhone, msg);
