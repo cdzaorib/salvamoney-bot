@@ -113,6 +113,24 @@ function expenseMonthsSeed(gastos = {}, extraUserFields = {}) {
   };
 }
 
+function alertSeed({ alertas = {}, gastos = {}, extraUserFields = {} } = {}) {
+  return {
+    grupos: {
+      SALVAMONEY: {
+        usuarios: {
+          482913: {
+            ...extraUserFields,
+            alertas,
+            gastos: {
+              [currentMonthKey()]: gastos,
+            },
+          },
+        },
+      },
+    },
+  };
+}
+
 function deleteSelectionSeed() {
   return expenseSeed({
     mercado_1: {
@@ -2121,6 +2139,326 @@ test('expense query without results answers clearly', async () => {
 
   assert.equal(resposta, 'Não encontrei gastos com Alimentação neste mês.');
   assertNoFirebaseWrites(firebase);
+});
+
+test('alert command without a valid tag session asks to enter', async () => {
+  const { firebase, service } = createService({
+    seed: expenseSeed(),
+    session: { group: 'SALVAMONEY', user: 'carlos' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'alerta de 300 para alimentação');
+
+  assert.equal(resposta, 'Entre com sua tag de 6 dígitos usando: entrar 123456');
+  assertNoFirebaseWrites(firebase);
+});
+
+test('creates a category alert without touching financial data', async () => {
+  const { firebase, service } = createService({
+    seed: protectedAccountSeed(),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'me avise quando eu gastar mais de 300 com delivery');
+
+  assert.equal(resposta, [
+    'Alerta criado ✅',
+    'Vou te avisar quando Alimentação passar de R$ 300,00 no mês.',
+  ].join('\n'));
+  assert.deepEqual(firebase.pushes.map((write) => write.path), [
+    'grupos/SALVAMONEY/usuarios/482913/alertas',
+  ]);
+  assert.equal(firebase.pushes[0].value.tipo, 'categoria');
+  assert.equal(firebase.pushes[0].value.categoria, 'Alimentação');
+  assert.equal(firebase.pushes[0].value.limite, 300);
+  assert.equal(firebase.pushes[0].value.ativo, true);
+  assert.equal(typeof firebase.pushes[0].value.createdAt, 'string');
+  assertProtectedFinancialData(firebase);
+  assert.deepEqual(firebase.sets, []);
+  assert.deepEqual(firebase.updates, []);
+  assert.deepEqual(firebase.removals, []);
+});
+
+test('creates a monthly budget alert', async () => {
+  const { firebase, service } = createService({
+    seed: expenseSeed(),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'limite mensal 2500');
+
+  assert.equal(resposta, [
+    'Alerta criado ✅',
+    'Vou te avisar quando seus gastos do mês passarem de R$ 2.500,00.',
+  ].join('\n'));
+  assert.equal(firebase.pushes[0].path, 'grupos/SALVAMONEY/usuarios/482913/alertas');
+  assert.equal(firebase.pushes[0].value.tipo, 'orcamento_mensal');
+  assert.equal(firebase.pushes[0].value.limite, 2500);
+  assert.equal(firebase.pushes[0].value.ativo, true);
+  assert.deepEqual(firebase.sets, []);
+  assert.deepEqual(firebase.updates, []);
+  assert.deepEqual(firebase.removals, []);
+});
+
+test('lists only active alerts', async () => {
+  const { firebase, service } = createService({
+    seed: alertSeed({
+      alertas: {
+        alimentacao: {
+          tipo: 'categoria',
+          categoria: 'Alimentação',
+          limite: 300,
+          ativo: true,
+          createdAt: '2026-01-01T00:00:00.000Z',
+        },
+        mensal: {
+          tipo: 'orcamento_mensal',
+          limite: 2000,
+          ativo: true,
+          createdAt: '2026-01-02T00:00:00.000Z',
+        },
+        transporte: {
+          tipo: 'categoria',
+          categoria: 'Transporte',
+          limite: 100,
+          ativo: false,
+          createdAt: '2026-01-03T00:00:00.000Z',
+        },
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'meus alertas');
+
+  assert.equal(resposta, [
+    'Seus alertas ativos:',
+    '1. Alimentação acima de R$ 300,00',
+    '2. Orçamento mensal acima de R$ 2.000,00',
+  ].join('\n'));
+  assertNoFirebaseWrites(firebase);
+});
+
+test('removes an alert by number by deactivating it', async () => {
+  const { firebase, service } = createService({
+    seed: alertSeed({
+      alertas: {
+        mensal: {
+          tipo: 'orcamento_mensal',
+          limite: 2000,
+          ativo: true,
+          createdAt: '2026-01-01T00:00:00.000Z',
+        },
+        alimentacao: {
+          tipo: 'categoria',
+          categoria: 'Alimentação',
+          limite: 300,
+          ativo: true,
+          createdAt: '2026-01-02T00:00:00.000Z',
+        },
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'remover alerta 1');
+
+  assert.equal(resposta, 'Alerta de orçamento mensal removido.');
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/alertas/mensal/ativo'), false);
+  assert.deepEqual(firebase.updates.map((write) => write.path), [
+    'grupos/SALVAMONEY/usuarios/482913/alertas/mensal',
+  ]);
+  assert.equal(firebase.pushes.length, 0);
+  assert.deepEqual(firebase.sets, []);
+  assert.deepEqual(firebase.removals, []);
+});
+
+test('removes an alert by category by deactivating the matching alert', async () => {
+  const { firebase, service } = createService({
+    seed: alertSeed({
+      alertas: {
+        alimentacao: {
+          tipo: 'categoria',
+          categoria: 'Alimentação',
+          limite: 300,
+          ativo: true,
+          createdAt: '2026-01-01T00:00:00.000Z',
+        },
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'apagar alerta delivery');
+
+  assert.equal(resposta, 'Alerta de Alimentação removido.');
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/alertas/alimentacao/ativo'), false);
+  assert.deepEqual(firebase.updates.map((write) => write.path), [
+    'grupos/SALVAMONEY/usuarios/482913/alertas/alimentacao',
+  ]);
+  assert.equal(firebase.pushes.length, 0);
+  assert.deepEqual(firebase.sets, []);
+  assert.deepEqual(firebase.removals, []);
+});
+
+test('inactive category alert does not fire after a new expense', async () => {
+  const { firebase, service } = createService({
+    seed: alertSeed({
+      alertas: {
+        alimentacao: {
+          tipo: 'categoria',
+          categoria: 'Alimentação',
+          limite: 10,
+          ativo: false,
+          createdAt: '2026-01-01T00:00:00.000Z',
+        },
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'mercado 20');
+
+  assert.match(resposta, /mercado/);
+  assert.match(resposta, /registrado/);
+  assert.doesNotMatch(resposta, /Alerta financeiro/);
+  assert.equal(firebase.pushes.length, 1);
+  assert.match(firebase.pushes[0].path, /grupos\/SALVAMONEY\/usuarios\/482913\/gastos\//);
+  assert.deepEqual(firebase.updates, []);
+});
+
+test('category alert fires after a new expense pushes the category over the limit', async () => {
+  const { firebase, service } = createService({
+    seed: alertSeed({
+      alertas: {
+        alimentacao: {
+          tipo: 'categoria',
+          categoria: 'Alimentação',
+          limite: 100,
+          ativo: true,
+          createdAt: '2026-01-01T00:00:00.000Z',
+        },
+      },
+      gastos: {
+        mercado_antigo: {
+          cat: 'Alimentação',
+          date: todayIso(),
+          desc: 'Mercado antigo',
+          value: 90,
+        },
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'mercado 20');
+
+  assert.match(resposta, /mercado/);
+  assert.match(resposta, /registrado/);
+  assert.match(resposta, /Alerta financeiro ⚠️/);
+  assert.match(resposta, /Você passou de R\$ 100,00 em Alimentação neste mês\./);
+  assert.match(resposta, /Total atual: R\$ 110,00\./);
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/alertas/alimentacao/ultimoDisparoMes'), currentMonthKey());
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/alertas/alimentacao/limite'), 100);
+  assert.deepEqual(firebase.updates.map((write) => write.path), [
+    'grupos/SALVAMONEY/usuarios/482913/alertas/alimentacao',
+  ]);
+  assert.deepEqual(Object.keys(firebase.updates[0].value).sort(), ['ultimoDisparoMes', 'updatedAt']);
+});
+
+test('monthly alert fires after a new expense pushes the month over the limit', async () => {
+  const { firebase, service } = createService({
+    seed: alertSeed({
+      alertas: {
+        mensal: {
+          tipo: 'orcamento_mensal',
+          limite: 100,
+          ativo: true,
+          createdAt: '2026-01-01T00:00:00.000Z',
+        },
+      },
+      gastos: {
+        mercado_antigo: {
+          cat: 'Alimentação',
+          date: todayIso(),
+          desc: 'Mercado antigo',
+          value: 90,
+        },
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'uber 20');
+
+  assert.match(resposta, /uber/);
+  assert.match(resposta, /registrado/);
+  assert.match(resposta, /Seus gastos do mês passaram de R\$ 100,00\./);
+  assert.match(resposta, /Total atual: R\$ 110,00\./);
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/alertas/mensal/ultimoDisparoMes'), currentMonthKey());
+  assert.deepEqual(firebase.updates.map((write) => write.path), [
+    'grupos/SALVAMONEY/usuarios/482913/alertas/mensal',
+  ]);
+});
+
+test('alert does not fire twice in the same month', async () => {
+  const { firebase, service } = createService({
+    seed: alertSeed({
+      alertas: {
+        alimentacao: {
+          tipo: 'categoria',
+          categoria: 'Alimentação',
+          limite: 100,
+          ativo: true,
+          createdAt: '2026-01-01T00:00:00.000Z',
+        },
+      },
+      gastos: {
+        mercado_antigo: {
+          cat: 'Alimentação',
+          date: todayIso(),
+          desc: 'Mercado antigo',
+          value: 90,
+        },
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const primeiro = await service.processarMensagem('5511999999999', 'mercado 20');
+  const segundo = await service.processarMensagem('5511999999999', 'delivery 30');
+
+  assert.match(primeiro, /Alerta financeiro/);
+  assert.doesNotMatch(segundo, /Alerta financeiro/);
+  assert.equal(firebase.updates.length, 1);
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/alertas/alimentacao/ultimoDisparoMes'), currentMonthKey());
+});
+
+test('monthly alert status update preserves the rest of the alert object', async () => {
+  const { firebase, service } = createService({
+    seed: alertSeed({
+      alertas: {
+        mensal: {
+          tipo: 'orcamento_mensal',
+          limite: 100,
+          ativo: true,
+          createdAt: '2026-01-01T00:00:00.000Z',
+        },
+      },
+      gastos: {
+        mercado_antigo: {
+          cat: 'Alimentação',
+          date: todayIso(),
+          desc: 'Mercado antigo',
+          value: 90,
+        },
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+
+  await service.processarMensagem('5511999999999', 'uber 20');
+
+  assert.deepEqual(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/alertas/mensal'), {
+    tipo: 'orcamento_mensal',
+    limite: 100,
+    ativo: true,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    ultimoDisparoMes: currentMonthKey(),
+    updatedAt: firebase.getValue('grupos/SALVAMONEY/usuarios/482913/alertas/mensal/updatedAt'),
+  });
+  assert.equal(firebase.updates[0].path, 'grupos/SALVAMONEY/usuarios/482913/alertas/mensal');
+  assert.deepEqual(Object.keys(firebase.updates[0].value).sort(), ['ultimoDisparoMes', 'updatedAt']);
 });
 
 test('normal text expense asks to link an account after sair da conta', async () => {

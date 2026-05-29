@@ -9,6 +9,7 @@ const {
   isTodayCommand,
 } = require('./bot/commands');
 const { createAccountService } = require('./bot/account-service');
+const { createAlertService } = require('./bot/alert-service');
 const { createAiMediaService } = require('./bot/ai-media-service');
 const { detectarCategoria } = require('./bot/categories');
 const { MESES, createDateUtils } = require('./bot/date-utils');
@@ -320,6 +321,11 @@ function createBotService({
     firebaseOps: { get, ref },
     groq,
   });
+  const alertService = createAlertService({
+    dateUtils,
+    db,
+    firebaseOps: { get, push, ref, update },
+  });
   const userService = providedUserService || createUserService({
     db,
     firebaseOps: { get, ref, set, update },
@@ -332,13 +338,52 @@ function createBotService({
     todayIso,
     userService,
   });
+  const expenseServiceWithAlerts = {
+    ...expenseService,
+    registrarGasto: registrarGastoComAlertas,
+    registrarParcelamento: registrarParcelamentoComAlertas,
+  };
   const aiMediaService = createAiMediaService({
     config,
-    expenseService,
+    expenseService: expenseServiceWithAlerts,
     groq,
     safeLog,
     todayIso,
   });
+
+  function shouldCheckAlerts(response) {
+    return typeof response === 'string' && /\b(registrado|parcelado)\b/i.test(response);
+  }
+
+  async function appendAlertMessages(response, session) {
+    try {
+      const alertMessages = await alertService.verificarAlertas(session);
+
+      return alertMessages.length
+        ? [response, ...alertMessages].join('\n\n')
+        : response;
+    } catch (err) {
+      console.error('Erro ao verificar alertas financeiros:', err.response?.data || err.message || err);
+
+      return response;
+    }
+  }
+
+  async function registrarGastoComAlertas(session, expense, source = 'texto') {
+    const response = await registrarGasto(session, expense, source);
+
+    return shouldCheckAlerts(response)
+      ? await appendAlertMessages(response, session)
+      : response;
+  }
+
+  async function registrarParcelamentoComAlertas(session, installment) {
+    const response = await registrarParcelamento(session, installment);
+
+    return shouldCheckAlerts(response)
+      ? await appendAlertMessages(response, session)
+      : response;
+  }
 
   async function saveSignupSession(phone, sessao, data) {
     await saveSession(phone, {
@@ -672,6 +717,10 @@ function createBotService({
         '_quanto gastei com mercado esse mês?_',
         '_quanto gastei ontem_',
         '',
+        '🚨 *Alertas:*',
+        '_alerta de 300 para alimentação_',
+        '_listar alertas_',
+        '',
         '🧭 *Perfil financeiro:*',
         '_recebo 3000 todo dia 5_',
         '_meu cartão vence dia 12_',
@@ -732,6 +781,12 @@ function createBotService({
 
     // ── SEM SESSÃO VÁLIDA ──
     if (!hasValidAccessSession(sessao)) {
+      const respostaAlerta = await alertService.processarComandoAlerta(sessao, msg);
+
+      if (respostaAlerta) {
+        return respostaAlerta;
+      }
+
       const respostaConsultaGastos = await expenseQueryService.processarConsultaGastos(sessao, msg);
 
       if (respostaConsultaGastos) {
@@ -757,6 +812,12 @@ ${SITE_URL}`;
     }
 
     const sessaoComPhone = sessionWithPhone(sessao, phone);
+
+    const respostaAlerta = await alertService.processarComandoAlerta(sessaoComPhone, msg);
+
+    if (respostaAlerta) {
+      return respostaAlerta;
+    }
 
     const respostaResumoMensal = await monthlySummaryService.processarResumoMensal(sessaoComPhone, msg);
 
@@ -849,7 +910,7 @@ ${SITE_URL}`;
       const parcela = parsearParcelamento(msg);
 
       if (parcela) {
-        return await registrarParcelamento(sessaoComPhone, parcela);
+        return await registrarParcelamentoComAlertas(sessaoComPhone, parcela);
       }
     }
 
@@ -857,7 +918,7 @@ ${SITE_URL}`;
     const gasto = parsearGasto(msg);
 
     if (gasto) {
-      return await registrarGasto(sessaoComPhone, {
+      return await registrarGastoComAlertas(sessaoComPhone, {
         desc: gasto.desc,
         valor: gasto.valor,
         cat: detectarCategoria(gasto.desc),
