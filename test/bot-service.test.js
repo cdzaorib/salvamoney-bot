@@ -131,6 +131,40 @@ function alertSeed({ alertas = {}, gastos = {}, extraUserFields = {} } = {}) {
   };
 }
 
+function chargeUsersSeed({
+  origin = {},
+  destination = {},
+  originCharges = {},
+  destinationCharges = {},
+  gastos = {},
+} = {}) {
+  return {
+    grupos: {
+      SALVAMONEY: {
+        usuarios: {
+          482913: {
+            nome: 'Carlos',
+            tag: '482913',
+            phone: '5511999999999',
+            ...origin,
+            cobrancasEnviadas: originCharges,
+            gastos: {
+              [currentMonthKey()]: gastos,
+            },
+          },
+          123456: {
+            nome: 'Anna',
+            tag: '123456',
+            phone: '5511888888888',
+            ...destination,
+            cobrancasRecebidas: destinationCharges,
+          },
+        },
+      },
+    },
+  };
+}
+
 function deleteSelectionSeed() {
   return expenseSeed({
     mercado_1: {
@@ -424,6 +458,7 @@ function assertNoFirebaseWrites(firebase) {
 function createService({
   configOverrides = {},
   groqOverrides = {},
+  notificationSender,
   randomInt,
   seed = {},
   session = null,
@@ -450,6 +485,7 @@ function createService({
       ...groq,
       ...groqOverrides,
     },
+    notificationSender,
     safeLog,
     sessionStore,
     userService: resolvedUserService,
@@ -475,6 +511,7 @@ function createStatefulService({
   configOverrides = {},
   groqOverrides = {},
   initialSession = null,
+  notificationSender,
   seed = {},
   userService,
 } = {}) {
@@ -499,6 +536,7 @@ function createStatefulService({
       ...groq,
       ...groqOverrides,
     },
+    notificationSender,
     safeLog,
     sessionStore,
     userService,
@@ -2459,6 +2497,381 @@ test('monthly alert status update preserves the rest of the alert object', async
   });
   assert.equal(firebase.updates[0].path, 'grupos/SALVAMONEY/usuarios/482913/alertas/mensal');
   assert.deepEqual(Object.keys(firebase.updates[0].value).sort(), ['ultimoDisparoMes', 'updatedAt']);
+});
+
+test('charge command without a valid tag session asks to enter', async () => {
+  const { firebase, service } = createService({
+    seed: chargeUsersSeed(),
+    session: { group: 'SALVAMONEY', user: 'carlos' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'cobrar 80 de 123456');
+
+  assert.equal(resposta, 'Entre com sua tag de 6 dígitos usando: entrar 123456');
+  assertNoFirebaseWrites(firebase);
+});
+
+test('creates a direct charge and notifies the destination phone', async () => {
+  const notifications = [];
+  const { firebase, service } = createService({
+    notificationSender: async (phone, message) => {
+      notifications.push({ phone, message });
+    },
+    seed: chargeUsersSeed(),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'cobrar 80 da tag 123456 pelo almoço');
+  const sent = firebase.getValue('grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas');
+  const received = firebase.getValue('grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas');
+  const id = Object.keys(sent)[0];
+
+  assert.equal(resposta, [
+    'Cobrança criada ✅',
+    'Almoço — R$ 80,00 para Anna.',
+  ].join('\n'));
+  assert.equal(id, Object.keys(received)[0]);
+  assert.equal(sent[id].id, id);
+  assert.equal(sent[id].descricao, 'Almoço');
+  assert.equal(sent[id].valorCobrado, 80);
+  assert.equal(sent[id].valorTotal, 80);
+  assert.equal(sent[id].status, 'pendente');
+  assert.deepEqual(received[id], sent[id]);
+  assert.deepEqual(notifications, [{
+    phone: '5511888888888',
+    message: [
+      'Carlos te enviou uma cobrança:',
+      'Almoço',
+      'Valor: R$ 80,00',
+      '',
+      'Responda:',
+      'aceitar cobrança 1',
+      'ou',
+      'recusar cobrança 1',
+    ].join('\n'),
+  }]);
+  assert.equal(firebase.sets.some((write) => write.path === 'grupos/SALVAMONEY/usuarios/482913'), false);
+  assert.equal(firebase.sets.some((write) => write.path === 'grupos/SALVAMONEY/usuarios/123456'), false);
+  assert.deepEqual(firebase.updates, []);
+  assert.equal(firebase.removals.length, 0);
+});
+
+test('creates a percentage charge and registers the origin expense when the user spent money', async () => {
+  const notifications = [];
+  const { firebase, service } = createService({
+    notificationSender: async (phone, message) => {
+      notifications.push({ phone, message });
+    },
+    seed: chargeUsersSeed(),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913', name: 'Carlos' },
+  });
+  const resposta = await service.processarMensagem(
+    '5511999999999',
+    'almocei com Anna e gastei 100, ela paga 80%, tag dela 123456'
+  );
+  const sent = firebase.getValue('grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas');
+  const id = Object.keys(sent)[0];
+  const expense = firebase.pushes.find((write) =>
+    write.path === `grupos/SALVAMONEY/usuarios/482913/gastos/${currentMonthKey()}`
+  );
+
+  assert.match(resposta, /Cobrança criada ✅/);
+  assert.match(resposta, /Almoço — R\$ 80,00 para Anna\./);
+  assert.match(resposta, /Também registrei o gasto total de R\$ 100,00 para você\./);
+  assert.equal(sent[id].valorTotal, 100);
+  assert.equal(sent[id].valorCobrado, 80);
+  assert.equal(sent[id].percentual, 80);
+  assert.equal(sent[id].origemGastoId, expense.id);
+  assert.equal(sent[id].origemGastoMes, currentMonthKey());
+  assert.equal(expense.value.desc, 'Almoço');
+  assert.equal(expense.value.value, 100);
+  assert.equal(expense.value.cobranca, true);
+  assert.equal(expense.value.cobrancaId, id);
+  assert.equal(notifications.length, 1);
+  assert.deepEqual(firebase.getValue(`grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/${id}`), sent[id]);
+});
+
+test('charge creation rejects an unknown destination tag', async () => {
+  const { firebase, service } = createService({
+    seed: chargeUsersSeed(),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'cobrar 80 de 999999');
+
+  assert.equal(resposta, 'Não encontrei essa tag. Confira a tag de 6 dígitos da pessoa.');
+  assertNoFirebaseWrites(firebase);
+});
+
+test('charge creation rejects charging the own tag', async () => {
+  const { firebase, service } = createService({
+    seed: chargeUsersSeed(),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'cobrar 80 de 482913');
+
+  assert.equal(resposta, 'Você não pode cobrar sua própria tag.');
+  assertNoFirebaseWrites(firebase);
+});
+
+test('charge creation rejects invalid values', async () => {
+  const { firebase, service } = createService({
+    seed: chargeUsersSeed(),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'cobrar 0 de 123456');
+
+  assert.equal(resposta, 'Informe um valor positivo para a cobrança. Exemplo: cobrar 80 de 123456');
+  assertNoFirebaseWrites(firebase);
+});
+
+test('lists received charges with pending items first', async () => {
+  const chargeAccepted = {
+    id: 'c2',
+    descricao: 'Cinema',
+    valorCobrado: 40,
+    tagOrigem: '482913',
+    nomeOrigem: 'Carlos',
+    tagDestino: '123456',
+    nomeDestino: 'Anna',
+    status: 'aceita',
+    createdAt: '2026-05-01T12:00:00.000Z',
+  };
+  const chargePending = {
+    id: 'c1',
+    descricao: 'Almoço',
+    valorCobrado: 80,
+    tagOrigem: '482913',
+    nomeOrigem: 'Carlos',
+    tagDestino: '123456',
+    nomeDestino: 'Anna',
+    status: 'pendente',
+    createdAt: '2026-05-02T12:00:00.000Z',
+  };
+  const { firebase, service } = createService({
+    seed: chargeUsersSeed({
+      destinationCharges: {
+        c1: chargePending,
+        c2: chargeAccepted,
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '123456', tag: '123456' },
+  });
+  const resposta = await service.processarMensagem('5511888888888', 'cobranças recebidas');
+
+  assert.match(resposta, /Cobranças recebidas:/);
+  assert.match(resposta, /1\. Almoço — R\$ 80,00 — de Carlos — pendente/);
+  assert.match(resposta, /2\. Cinema — R\$ 40,00 — de Carlos — aceita/);
+  assert.match(resposta, /Use: aceitar cobrança 1 ou recusar cobrança 1/);
+  assertNoFirebaseWrites(firebase);
+});
+
+test('lists sent charges', async () => {
+  const charge = {
+    id: 'c1',
+    descricao: 'Almoço',
+    valorCobrado: 80,
+    tagOrigem: '482913',
+    nomeOrigem: 'Carlos',
+    tagDestino: '123456',
+    nomeDestino: 'Anna',
+    status: 'pendente',
+    createdAt: '2026-05-02T12:00:00.000Z',
+  };
+  const { firebase, service } = createService({
+    seed: chargeUsersSeed({
+      originCharges: {
+        c1: charge,
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'cobranças enviadas');
+
+  assert.match(resposta, /Cobranças enviadas:/);
+  assert.match(resposta, /1\. Almoço — R\$ 80,00 — para Anna — pendente/);
+  assert.match(resposta, /Use: cancelar cobrança 1/);
+  assertNoFirebaseWrites(firebase);
+});
+
+test('accepting a charge updates both copies and notifies the origin', async () => {
+  const notifications = [];
+  const charge = {
+    id: 'c1',
+    descricao: 'Almoço',
+    valorCobrado: 80,
+    tagOrigem: '482913',
+    nomeOrigem: 'Carlos',
+    phoneOrigem: '5511999999999',
+    tagDestino: '123456',
+    nomeDestino: 'Anna',
+    phoneDestino: '5511888888888',
+    status: 'pendente',
+    createdAt: '2026-05-02T12:00:00.000Z',
+  };
+  const { firebase, service } = createService({
+    notificationSender: async (phone, message) => {
+      notifications.push({ phone, message });
+    },
+    seed: chargeUsersSeed({
+      originCharges: {
+        c1: charge,
+      },
+      destinationCharges: {
+        c1: charge,
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '123456', tag: '123456' },
+  });
+  const resposta = await service.processarMensagem('5511888888888', 'aceitar cobrança 1');
+
+  assert.equal(resposta, 'Você aceitou a cobrança de R$ 80,00 referente a Almoço.');
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/status'), 'aceita');
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/status'), 'aceita');
+  assert.equal(typeof firebase.getValue('grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/respondedAt'), 'string');
+  assert.deepEqual(firebase.updates.map((write) => write.path), [
+    'grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1',
+    'grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1',
+  ]);
+  assert.deepEqual(notifications, [{
+    phone: '5511999999999',
+    message: 'Anna aceitou sua cobrança de R$ 80,00 referente a Almoço.',
+  }]);
+  assert.equal(firebase.pushes.length, 0);
+  assert.deepEqual(firebase.sets, []);
+});
+
+test('declining a charge updates both copies and notifies the origin', async () => {
+  const notifications = [];
+  const charge = {
+    id: 'c1',
+    descricao: 'Almoço',
+    valorCobrado: 80,
+    tagOrigem: '482913',
+    nomeOrigem: 'Carlos',
+    phoneOrigem: '5511999999999',
+    tagDestino: '123456',
+    nomeDestino: 'Anna',
+    phoneDestino: '5511888888888',
+    status: 'pendente',
+    createdAt: '2026-05-02T12:00:00.000Z',
+  };
+  const { firebase, service } = createService({
+    notificationSender: async (phone, message) => {
+      notifications.push({ phone, message });
+    },
+    seed: chargeUsersSeed({
+      originCharges: {
+        c1: charge,
+      },
+      destinationCharges: {
+        c1: charge,
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '123456', tag: '123456' },
+  });
+  const resposta = await service.processarMensagem('5511888888888', 'recusar 1');
+
+  assert.equal(resposta, 'Você recusou a cobrança de R$ 80,00 referente a Almoço.');
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/status'), 'recusada');
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/status'), 'recusada');
+  assert.deepEqual(notifications, [{
+    phone: '5511999999999',
+    message: 'Anna recusou sua cobrança de R$ 80,00 referente a Almoço.',
+  }]);
+  assert.equal(firebase.pushes.length, 0);
+  assert.deepEqual(firebase.sets, []);
+});
+
+test('canceling a sent charge updates both copies and notifies the destination', async () => {
+  const notifications = [];
+  const charge = {
+    id: 'c1',
+    descricao: 'Almoço',
+    valorCobrado: 80,
+    tagOrigem: '482913',
+    nomeOrigem: 'Carlos',
+    phoneOrigem: '5511999999999',
+    tagDestino: '123456',
+    nomeDestino: 'Anna',
+    phoneDestino: '5511888888888',
+    status: 'pendente',
+    createdAt: '2026-05-02T12:00:00.000Z',
+  };
+  const { firebase, service } = createService({
+    notificationSender: async (phone, message) => {
+      notifications.push({ phone, message });
+    },
+    seed: chargeUsersSeed({
+      originCharges: {
+        c1: charge,
+      },
+      destinationCharges: {
+        c1: charge,
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'cancelar cobrança almoço');
+
+  assert.equal(resposta, 'Cobrança cancelada: Almoço — R$ 80,00.');
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/status'), 'cancelada');
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/status'), 'cancelada');
+  assert.deepEqual(notifications, [{
+    phone: '5511888888888',
+    message: 'Carlos cancelou a cobrança de R$ 80,00 referente a Almoço.',
+  }]);
+  assert.equal(firebase.pushes.length, 0);
+  assert.deepEqual(firebase.sets, []);
+});
+
+test('accepting an already answered charge is blocked', async () => {
+  const charge = {
+    id: 'c1',
+    descricao: 'Almoço',
+    valorCobrado: 80,
+    tagOrigem: '482913',
+    nomeOrigem: 'Carlos',
+    tagDestino: '123456',
+    nomeDestino: 'Anna',
+    status: 'aceita',
+    createdAt: '2026-05-02T12:00:00.000Z',
+  };
+  const { firebase, service } = createService({
+    seed: chargeUsersSeed({
+      destinationCharges: {
+        c1: charge,
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '123456', tag: '123456' },
+  });
+  const resposta = await service.processarMensagem('5511888888888', 'aceitar cobrança 1');
+
+  assert.equal(resposta, 'Não encontrei cobranças pendentes para responder.');
+  assertNoFirebaseWrites(firebase);
+});
+
+test('declining an already answered charge is blocked', async () => {
+  const charge = {
+    id: 'c1',
+    descricao: 'Almoço',
+    valorCobrado: 80,
+    tagOrigem: '482913',
+    nomeOrigem: 'Carlos',
+    tagDestino: '123456',
+    nomeDestino: 'Anna',
+    status: 'recusada',
+    createdAt: '2026-05-02T12:00:00.000Z',
+  };
+  const { firebase, service } = createService({
+    seed: chargeUsersSeed({
+      destinationCharges: {
+        c1: charge,
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '123456', tag: '123456' },
+  });
+  const resposta = await service.processarMensagem('5511888888888', 'recusar cobrança 1');
+
+  assert.equal(resposta, 'Não encontrei cobranças pendentes para responder.');
+  assertNoFirebaseWrites(firebase);
 });
 
 test('normal text expense asks to link an account after sair da conta', async () => {

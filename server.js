@@ -23,15 +23,16 @@ const db = createFirebaseDb(config.firebase);
 const safeLog = createSafeLog(config.logSensitiveData);
 const groq = createGroqClient(config);
 const sessionStore = createSessionStore(db);
+const sendMessage = createSendMessage(config, safeLog);
 const botService = createBotService({
   config,
   db,
   groq,
+  notificationSender: sendMessage,
   safeLog,
   sessionStore,
 });
 const messageDedupe = createMessageDedupe();
-const sendMessage = createSendMessage(config, safeLog);
 const webhookParser = createWebhookParser();
 
 registerRoutes({

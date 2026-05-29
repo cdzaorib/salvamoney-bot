@@ -12,6 +12,7 @@ const { createAccountService } = require('./bot/account-service');
 const { createAlertService } = require('./bot/alert-service');
 const { createAiMediaService } = require('./bot/ai-media-service');
 const { detectarCategoria } = require('./bot/categories');
+const { createChargeService } = require('./bot/charge-service');
 const { MESES, createDateUtils } = require('./bot/date-utils');
 const { createExpenseService } = require('./bot/expense-service');
 const { createExpenseQueryService } = require('./bot/expense-query-service');
@@ -267,6 +268,7 @@ function createBotService({
   db,
   firebaseOps,
   groq,
+  notificationSender,
   safeLog,
   sessionStore,
   userService: providedUserService,
@@ -325,6 +327,12 @@ function createBotService({
     dateUtils,
     db,
     firebaseOps: { get, push, ref, update },
+  });
+  const chargeService = createChargeService({
+    dateUtils,
+    db,
+    firebaseOps: { get, push, ref, set, update },
+    notificationSender,
   });
   const userService = providedUserService || createUserService({
     db,
@@ -721,6 +729,10 @@ function createBotService({
         '_alerta de 300 para alimentação_',
         '_listar alertas_',
         '',
+        '🤝 *Cobranças:*',
+        '_cobrar 80 de 123456 pelo almoço_',
+        '_cobranças recebidas_',
+        '',
         '🧭 *Perfil financeiro:*',
         '_recebo 3000 todo dia 5_',
         '_meu cartão vence dia 12_',
@@ -781,6 +793,12 @@ function createBotService({
 
     // ── SEM SESSÃO VÁLIDA ──
     if (!hasValidAccessSession(sessao)) {
+      const respostaCobranca = await chargeService.processarCobranca(sessao, msg);
+
+      if (respostaCobranca) {
+        return respostaCobranca;
+      }
+
       const respostaAlerta = await alertService.processarComandoAlerta(sessao, msg);
 
       if (respostaAlerta) {
@@ -812,6 +830,12 @@ ${SITE_URL}`;
     }
 
     const sessaoComPhone = sessionWithPhone(sessao, phone);
+
+    const respostaCobranca = await chargeService.processarCobranca(sessaoComPhone, msg);
+
+    if (respostaCobranca) {
+      return respostaCobranca;
+    }
 
     const respostaAlerta = await alertService.processarComandoAlerta(sessaoComPhone, msg);
 
