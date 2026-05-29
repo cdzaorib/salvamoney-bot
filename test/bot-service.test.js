@@ -485,6 +485,7 @@ function createService({
       ...groq,
       ...groqOverrides,
     },
+    logger: { info: () => {} },
     notificationSender,
     safeLog,
     sessionStore,
@@ -536,6 +537,7 @@ function createStatefulService({
       ...groq,
       ...groqOverrides,
     },
+    logger: { info: () => {} },
     notificationSender,
     safeLog,
     sessionStore,
@@ -2182,6 +2184,220 @@ test('financial advisor does not capture delete commands', async () => {
 
   assert.equal(called, false);
   assert.match(resposta, /Encontrei estes gastos parecidos/);
+});
+
+test('intent router routes broad financial advice questions to advisor', async () => {
+  const prompts = [];
+  const { firebase, service } = createService({
+    configOverrides: {
+      groqApiKey: 'fake-groq-key',
+    },
+    groqOverrides: {
+      chamarIA: async (prompt) => {
+        prompts.push(prompt);
+
+        if (/roteador seguro de intenção/.test(prompt[0].content)) {
+          return JSON.stringify({
+            intent: 'financial_advice',
+            confidence: 0.91,
+            reason: 'Usuário pede ajuda para organizar dinheiro',
+            entities: {
+              amount: null,
+              category: null,
+              period: null,
+              targetTag: null,
+            },
+          });
+        }
+
+        return 'Separe seus gastos por categoria e defina um limite simples para o restante do mês.';
+      },
+    },
+    seed: expenseSeed({
+      mercado: {
+        cat: 'Alimentação',
+        date: todayIso(),
+        desc: 'Mercado',
+        value: 120,
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'me ajuda a organizar meu dinheiro');
+
+  assert.equal(resposta, 'Separe seus gastos por categoria e defina um limite simples para o restante do mês.');
+  assert.equal(prompts.length, 2);
+  assert.match(prompts[0][0].content, /roteador seguro de intenção/);
+  assert.doesNotMatch(JSON.stringify(prompts[0]), /5511999999999|482913|perfilFinanceiro|gastos|fake-groq-key/);
+  assertNoFirebaseWrites(firebase);
+});
+
+test('intent router without Groq configuration does not break the bot', async () => {
+  let called = false;
+  const { firebase, service } = createService({
+    groqOverrides: {
+      chamarIA: async () => {
+        called = true;
+
+        throw new Error('router should not run without key');
+      },
+    },
+    seed: expenseSeed(),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'me ajuda a organizar meu dinheiro');
+
+  assert.equal(called, false);
+  assert.match(resposta, /Não entendi/);
+  assertNoFirebaseWrites(firebase);
+});
+
+test('intent router invalid JSON falls back to the old flow without writes', async () => {
+  let calls = 0;
+  const { firebase, service } = createService({
+    configOverrides: {
+      groqApiKey: 'fake-groq-key',
+    },
+    groqOverrides: {
+      chamarIA: async () => {
+        calls += 1;
+
+        return 'resposta livre sem json';
+      },
+    },
+    seed: expenseSeed(),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'me ajuda a organizar meu dinheiro');
+
+  assert.equal(calls, 2);
+  assert.equal(resposta, 'resposta livre sem json');
+  assertNoFirebaseWrites(firebase);
+});
+
+test('intent router low confidence classification does not trigger advisor', async () => {
+  let calls = 0;
+  const { firebase, service } = createService({
+    configOverrides: {
+      groqApiKey: 'fake-groq-key',
+    },
+    groqOverrides: {
+      chamarIA: async () => {
+        calls += 1;
+
+        return JSON.stringify({
+          intent: 'financial_advice',
+          confidence: 0.6,
+          reason: 'Pouco contexto',
+          entities: {},
+        });
+      },
+    },
+    seed: expenseSeed(),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'me ajuda a organizar meu dinheiro');
+
+  assert.equal(calls, 2);
+  assert.match(resposta, /"confidence":0\.6/);
+  assertNoFirebaseWrites(firebase);
+});
+
+test('intent router does not steal normal expense commands', async () => {
+  let called = false;
+  const { firebase, service } = createService({
+    configOverrides: {
+      groqApiKey: 'fake-groq-key',
+    },
+    groqOverrides: {
+      chamarIA: async () => {
+        called = true;
+
+        throw new Error('router should not run');
+      },
+    },
+    seed: expenseSeed(),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'gastei 20 no mercado');
+
+  assert.equal(called, false);
+  assert.match(resposta, /registrado/i);
+  assert.equal(firebase.pushes.length, 1);
+});
+
+test('intent router does not steal expense query commands', async () => {
+  let called = false;
+  const { firebase, service } = createService({
+    configOverrides: {
+      groqApiKey: 'fake-groq-key',
+    },
+    groqOverrides: {
+      chamarIA: async () => {
+        called = true;
+
+        throw new Error('router should not run');
+      },
+    },
+    seed: expenseSeed({
+      mercado: {
+        cat: 'Alimentação',
+        date: todayIso(),
+        desc: 'Mercado',
+        value: 70,
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'quanto gastei com mercado?');
+
+  assert.equal(called, false);
+  assert.match(resposta, /Você gastou R\$ 70,00/);
+  assertNoFirebaseWrites(firebase);
+});
+
+test('intent router does not steal charge accept commands', async () => {
+  let called = false;
+  const charge = {
+    id: 'c1',
+    descricao: 'Almoço',
+    valorTotal: null,
+    valorCobrado: 80,
+    percentual: null,
+    tagOrigem: '482913',
+    nomeOrigem: 'Carlos',
+    phoneOrigem: '5511999999999',
+    tagDestino: '123456',
+    nomeDestino: 'Anna',
+    phoneDestino: '5511888888888',
+    status: 'pendente',
+    createdAt: '2026-05-02T12:00:00.000Z',
+  };
+  const { service } = createService({
+    configOverrides: {
+      groqApiKey: 'fake-groq-key',
+    },
+    groqOverrides: {
+      chamarIA: async () => {
+        called = true;
+
+        throw new Error('router should not run');
+      },
+    },
+    seed: chargeUsersSeed({
+      originCharges: {
+        c1: charge,
+      },
+      destinationCharges: {
+        c1: charge,
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '123456', tag: '123456' },
+  });
+  const resposta = await service.processarMensagem('5511888888888', 'aceitar cobrança 1');
+
+  assert.equal(called, false);
+  assert.equal(resposta, 'Você aceitou a cobrança de R$ 80,00 referente a Almoço.');
 });
 
 test('savings goal without a valid tag session asks to enter', async () => {

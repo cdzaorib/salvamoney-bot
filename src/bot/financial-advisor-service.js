@@ -333,11 +333,7 @@ function createFinancialAdvisorService({
     return snap.val() || {};
   }
 
-  async function processarAdvisorFinanceiro(session, text) {
-    if (!isFinancialAdvisorCommand(text)) {
-      return null;
-    }
-
+  async function responderAdvisorFinanceiro(session, text) {
     if (!hasValidAccessSession(session)) {
       return FINANCIAL_ADVISOR_REQUIRED_MESSAGE;
     }
@@ -368,8 +364,17 @@ function createFinancialAdvisorService({
     });
   }
 
+  async function processarAdvisorFinanceiro(session, text) {
+    if (!isFinancialAdvisorCommand(text)) {
+      return null;
+    }
+
+    return await responderAdvisorFinanceiro(session, text);
+  }
+
   return {
     processarAdvisorFinanceiro,
+    responderAdvisorFinanceiro,
   };
 }
 

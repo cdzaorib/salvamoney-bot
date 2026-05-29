@@ -19,6 +19,7 @@ const { createExpenseQueryService } = require('./bot/expense-query-service');
 const { createFinancialAdvisorService } = require('./bot/financial-advisor-service');
 const { createFinancialProfileService } = require('./bot/financial-profile-service');
 const { createFixedExpenseService } = require('./bot/fixed-expense-service');
+const { createIntentRouterService } = require('./bot/intent-router-service');
 const { createMonthlySummaryService } = require('./bot/monthly-summary-service');
 const { createSavingsGoalService } = require('./bot/savings-goal-service');
 const { normalizeText } = require('./bot/text-utils');
@@ -270,6 +271,7 @@ function createBotService({
   db,
   firebaseOps,
   groq,
+  logger = console,
   notificationSender,
   safeLog,
   sessionStore,
@@ -331,6 +333,11 @@ function createBotService({
     db,
     firebaseOps: { get, ref },
     groq,
+  });
+  const intentRouterService = createIntentRouterService({
+    config,
+    groq,
+    logger,
   });
   const savingsGoalService = createSavingsGoalService({
     config,
@@ -407,6 +414,20 @@ function createBotService({
     return shouldCheckAlerts(response)
       ? await appendAlertMessages(response, session)
       : response;
+  }
+
+  async function processarIntencaoRoteada(session, msg) {
+    const classification = await intentRouterService.classificarIntencao(msg);
+
+    if (!classification || classification.intent === 'unknown') {
+      return null;
+    }
+
+    if (classification.intent === 'financial_advice') {
+      return await financialAdvisorService.responderAdvisorFinanceiro(session, msg);
+    }
+
+    return null;
   }
 
   async function saveSignupSession(phone, sessao, data) {
@@ -829,6 +850,12 @@ function createBotService({
         return respostaAdvisorFinanceiro;
       }
 
+      const respostaIntencaoRoteada = mediaInfo ? null : await processarIntencaoRoteada(sessao, msg);
+
+      if (respostaIntencaoRoteada) {
+        return respostaIntencaoRoteada;
+      }
+
       return `${TAG_ACCOUNT_REQUIRED_MESSAGE}
 
 🌐 Site:
@@ -877,6 +904,12 @@ ${SITE_URL}`;
 
     if (respostaAdvisorFinanceiro) {
       return respostaAdvisorFinanceiro;
+    }
+
+    const respostaIntencaoRoteada = mediaInfo ? null : await processarIntencaoRoteada(sessaoComPhone, msg);
+
+    if (respostaIntencaoRoteada) {
+      return respostaIntencaoRoteada;
     }
 
     // ── ÁUDIO ──
