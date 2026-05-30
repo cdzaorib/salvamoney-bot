@@ -65,6 +65,14 @@ function receivedChargePath(tag, id) {
   return `${receivedChargesPath(tag)}/${id}`;
 }
 
+function paymentExpenseId(chargeId) {
+  return `pag_${String(chargeId || '').replace(/[.#$\[\]\/]/g, '_')}`;
+}
+
+function paymentExpensePath(tag, monthKey, id) {
+  return `${userPath(tag)}/gastos/${monthKey}/${id}`;
+}
+
 function getUserName(profile, fallbackTag) {
   return profile?.nome || profile?.name || profile?.displayName || fallbackTag;
 }
@@ -586,13 +594,15 @@ function createChargeService({
     });
   }
 
-  async function updateChargeCopies(charge, fields) {
+  async function updateChargeCopies(charge, fields, extraPaths = {}) {
     const data = {
       ...fields,
       updatedAt: now(),
     };
 
-    const multipathUpdate = {};
+    const multipathUpdate = {
+      ...extraPaths,
+    };
 
     Object.entries(data).forEach(([key, value]) => {
       multipathUpdate[`${sentChargePath(charge.tagOrigem, charge.id)}/${key}`] = value;
@@ -600,6 +610,40 @@ function createChargeService({
     });
 
     await update(ref(db), multipathUpdate);
+  }
+
+  async function markReceivedChargeAsPaid(charge) {
+    const date = new Date();
+    const monthKey = charge.pagamentoGastoMes || dateUtils.monthKey(date);
+    const expenseId = charge.pagamentoGastoId || paymentExpenseId(charge.id);
+    const expensePath = paymentExpensePath(charge.tagDestino, monthKey, expenseId);
+    const expenseSnap = await get(ref(db, expensePath));
+    const existingExpense = expenseSnap.exists() ? expenseSnap.val() : null;
+
+    if (existingExpense && existingExpense.cobrancaId !== charge.id) {
+      throw new Error('Já existe outro gasto com o identificador reservado para esta cobrança.');
+    }
+
+    const timestamp = now();
+    const extraPaths = existingExpense ? {} : {
+      [expensePath]: {
+        desc: `Pagamento cobrança - ${charge.descricao || 'Cobrança'}`,
+        value: Number(charge.valorCobrado),
+        cat: 'Outros',
+        date: dateUtils.todayIso(date),
+        user: charge.tagDestino,
+        origem: 'cobranca',
+        cobrancaId: charge.id,
+        createdAt: timestamp,
+      },
+    };
+
+    await updateChargeCopies(charge, {
+      status: 'paga',
+      paidAt: timestamp,
+      pagamentoGastoId: expenseId,
+      pagamentoGastoMes: monthKey,
+    }, extraPaths);
   }
 
   async function createCharge(session, parsedCharge) {
@@ -817,14 +861,20 @@ function createChargeService({
     }
 
     try {
-      await updateChargeCopies(selected.charge, {
-        status: 'paga',
-        paidAt: now(),
-      });
+      if (selected.type === 'received') {
+        await markReceivedChargeAsPaid(selected.charge);
+      } else {
+        await updateChargeCopies(selected.charge, {
+          status: 'paga',
+          paidAt: now(),
+        });
+      }
     } catch (err) {
       console.error('Erro ao marcar cobrança como paga:', err.response?.data || err.message || err);
 
-      return 'Não consegui atualizar as duas cópias da cobrança. Tente novamente.';
+      return selected.type === 'received'
+        ? 'Não consegui marcar a cobrança como paga nem registrar o gasto com segurança. Tente novamente.'
+        : 'Não consegui atualizar as duas cópias da cobrança. Tente novamente.';
     }
 
     if (selected.type === 'received') {
