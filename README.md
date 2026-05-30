@@ -64,6 +64,8 @@ Configure `WEBHOOK_TOKEN` para recusar chamadas ao webhook sem token. O token po
 
 Configure `DASHBOARD_TOKEN` para proteger `/api/dashboard` e `/api/gasto/:id`. Com ele ativo, abra o dashboard com `?token=SEU_TOKEN` para que a interface repasse o token nas chamadas da API.
 
+Use `NODE_ENV=production` no Railway. Sem `NODE_ENV`, o backend também assume o modo seguro: webhook e API do dashboard recusam chamadas enquanto os tokens não estiverem configurados. Para desenvolvimento local sem tokens, declare explicitamente `NODE_ENV=development`.
+
 Por padrão, logs escondem telefone, mensagens e transcrições. Use `LOG_SENSITIVE_DATA=true` somente em diagnóstico controlado.
 
 ### Firebase Realtime Database

@@ -7,7 +7,7 @@ function createSendMessage(config, safeLog) {
     try {
       if (!message) {
         console.log('⚠️ sendMessage chamado sem mensagem.');
-        return;
+        return false;
       }
 
       console.log(`📤 Tentando enviar para ${safeLog.maskPhone(phone)}: ${safeLog.logText(message)}`);
@@ -40,9 +40,13 @@ function createSendMessage(config, safeLog) {
 
       if (response.status >= 400) {
         console.error('❌ Evolution recusou envio:', response.status, response.data);
+        return false;
       }
+
+      return true;
     } catch (e) {
       console.error('Erro ao enviar msg:', e.response?.status, e.response?.data || e.message);
+      return false;
     }
   };
 }

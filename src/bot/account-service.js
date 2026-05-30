@@ -5,6 +5,12 @@ const { DEFAULT_GROUP, normalizeAccessTag } = require('../services/user-service'
 
 const TAG_ONLY_MESSAGE = 'Agora o SalvaMoney usa apenas sua tag de 6 dígitos. Use: criar conta SeuNome ou entrar 123456.';
 const TAG_NOT_FOUND_MESSAGE = 'Tag não encontrada. Crie sua conta pelo WhatsApp usando: criar conta SeuNome';
+const TAG_OWNER_MISMATCH_MESSAGE = 'Essa tag pertence a outro WhatsApp. Use o WhatsApp original ou crie uma nova conta.';
+const TAG_OWNER_MISSING_MESSAGE = 'Não consegui confirmar o WhatsApp desta tag. Crie uma nova conta ou fale com o suporte.';
+
+function normalizePhone(phone) {
+  return String(phone || '').replace(/\D/g, '');
+}
 
 function createAccountService({
   db,
@@ -34,6 +40,18 @@ function createAccountService({
     });
   }
 
+  function ownerValidationMessage(phone, user) {
+    const ownerPhone = normalizePhone(user?.phone);
+
+    if (!ownerPhone) {
+      return TAG_OWNER_MISSING_MESSAGE;
+    }
+
+    return ownerPhone === normalizePhone(phone)
+      ? null
+      : TAG_OWNER_MISMATCH_MESSAGE;
+  }
+
   async function processarComandoConta({ phone, texto, sessao }) {
     const enterMatch = String(texto || '').match(/^entrar\s+(.+)$/i);
 
@@ -54,6 +72,11 @@ function createAccountService({
         }
 
         const siteUser = snap.val() || {};
+        const validationMessage = ownerValidationMessage(phone, siteUser);
+
+        if (validationMessage) {
+          return validationMessage;
+        }
 
         await saveAccessSession(phone, {
           name: siteUser.nome || '',
@@ -61,6 +84,12 @@ function createAccountService({
         });
 
         return `✅ Pronto! Você entrou com a tag *${tag}*.`;
+      }
+
+      const validationMessage = ownerValidationMessage(phone, foundUser);
+
+      if (validationMessage) {
+        return validationMessage;
       }
 
       await saveAccessSession(phone, foundUser);
@@ -83,6 +112,8 @@ function createAccountService({
 
 module.exports = {
   TAG_NOT_FOUND_MESSAGE,
+  TAG_OWNER_MISMATCH_MESSAGE,
+  TAG_OWNER_MISSING_MESSAGE,
   TAG_ONLY_MESSAGE,
   createAccountService,
 };

@@ -65,7 +65,10 @@ function evolutionTextPayload(event = 'messages.upsert') {
   };
 }
 
-function createWebhookHarness() {
+function createWebhookHarness({
+  configOverrides = {},
+  session = null,
+} = {}) {
   const app = createFakeApp();
   const processed = [];
   const sent = [];
@@ -85,8 +88,10 @@ function createWebhookHarness() {
     config: {
       dashboardToken: '',
       groqApiKey: '',
+      requireRouteTokens: false,
       siteUrl: 'https://site.example/',
       webhookToken: '',
+      ...configOverrides,
     },
     messageDedupe: {
       isDuplicateMessage: () => false,
@@ -100,12 +105,13 @@ function createWebhookHarness() {
       sent.push({ phone, message, messageId });
     },
     sessionStore: {
-      getSession: async () => null,
+      getSession: async () => session,
     },
     webhookParser: createWebhookParser(),
   });
 
   return {
+    app,
     handler: app.handler('POST', '/webhook'),
     processed,
     sent,
@@ -165,4 +171,108 @@ test('webhook route ignores group payload before bot processing', async () => {
 
   assert.equal(processed.length, 0);
   assert.equal(sent.length, 0);
+});
+
+test('production webhook refuses requests while token is missing', async () => {
+  const { handler, processed } = createWebhookHarness({
+    configOverrides: {
+      requireRouteTokens: true,
+    },
+  });
+  const res = createResponse();
+
+  await handler({ body: evolutionTextPayload(), get: () => '', query: {} }, res);
+
+  assert.equal(res.statusCode, 401);
+  assert.deepEqual(res.body, { ok: false, error: 'Webhook não autorizado.' });
+  assert.deepEqual(processed, []);
+});
+
+test('production webhook accepts the configured token and refuses a wrong token', async () => {
+  const { handler, processed } = createWebhookHarness({
+    configOverrides: {
+      requireRouteTokens: true,
+      webhookToken: 'webhook-secret',
+    },
+  });
+  const accepted = createResponse();
+  const refused = createResponse();
+
+  await handler({
+    body: evolutionTextPayload(),
+    get: (name) => name === 'x-webhook-token' ? 'webhook-secret' : '',
+    query: {},
+  }, accepted);
+  await handler({
+    body: evolutionTextPayload(),
+    get: (name) => name === 'x-webhook-token' ? 'wrong-secret' : '',
+    query: {},
+  }, refused);
+
+  assert.equal(accepted.statusCode, 200);
+  assert.equal(refused.statusCode, 401);
+  assert.equal(processed.length, 1);
+});
+
+test('production dashboard API refuses requests while token is missing', async () => {
+  const { app } = createWebhookHarness({
+    configOverrides: {
+      requireRouteTokens: true,
+    },
+  });
+  const res = createResponse();
+
+  await app.handler('GET', '/api/dashboard')({
+    get: () => '',
+    query: { phone: '5511999999999' },
+  }, res);
+
+  assert.equal(res.statusCode, 401);
+  assert.deepEqual(res.body, { ok: false, error: 'Dashboard não autorizado.' });
+});
+
+test('production dashboard delete refuses requests while token is missing', async () => {
+  const { app } = createWebhookHarness({
+    configOverrides: {
+      requireRouteTokens: true,
+    },
+  });
+  const res = createResponse();
+
+  await app.handler('DELETE', '/api/gasto/:id')({
+    get: () => '',
+    params: { id: 'gasto_1' },
+    query: { phone: '5511999999999' },
+  }, res);
+
+  assert.equal(res.statusCode, 401);
+  assert.deepEqual(res.body, { ok: false, error: 'Dashboard não autorizado.' });
+});
+
+test('production dashboard API accepts the configured token and refuses a wrong token', async () => {
+  const { app } = createWebhookHarness({
+    configOverrides: {
+      dashboardToken: 'dashboard-secret',
+      requireRouteTokens: true,
+    },
+    session: {
+      group: 'SALVAMONEY',
+      user: '482913',
+    },
+  });
+  const accepted = createResponse();
+  const refused = createResponse();
+  const handler = app.handler('GET', '/api/dashboard');
+
+  await handler({
+    get: (name) => name === 'x-dashboard-token' ? 'dashboard-secret' : '',
+    query: { phone: '5511999999999' },
+  }, accepted);
+  await handler({
+    get: (name) => name === 'x-dashboard-token' ? 'wrong-secret' : '',
+    query: { phone: '5511999999999' },
+  }, refused);
+
+  assert.equal(accepted.body.ok, true);
+  assert.equal(refused.statusCode, 401);
 });

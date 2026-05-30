@@ -395,7 +395,7 @@ function createBotService({
     registrarParcelamento: registrarParcelamentoComAlertas,
   };
   const aiMediaService = createAiMediaService({
-    config,
+    aiProviderRouter,
     expenseService: expenseServiceWithAlerts,
     groq,
     safeLog,

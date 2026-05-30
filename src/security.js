@@ -40,12 +40,26 @@ function dashboardRequestToken(req) {
   );
 }
 
-function dashboardAuthorized(req, dashboardToken) {
-  return !dashboardToken || tokenMatches(dashboardToken, dashboardRequestToken(req));
+function routeAuthorized(expectedToken, providedToken, requireToken = false) {
+  if (!expectedToken) {
+    return !requireToken;
+  }
+
+  return tokenMatches(expectedToken, providedToken);
+}
+
+function dashboardAuthorized(req, dashboardToken, requireToken = false) {
+  return routeAuthorized(dashboardToken, dashboardRequestToken(req), requireToken);
+}
+
+function webhookAuthorized(req, webhookToken, requireToken = false) {
+  return routeAuthorized(webhookToken, webhookRequestToken(req), requireToken);
 }
 
 module.exports = {
   dashboardAuthorized,
+  routeAuthorized,
   tokenMatches,
+  webhookAuthorized,
   webhookRequestToken,
 };

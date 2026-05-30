@@ -219,6 +219,7 @@ function createUserService({
       if (user) {
         return {
           ...user,
+          phone,
           tag: normalizeAccessTag(user.tag || user.shareTag) || cleanTag,
           shareTag: normalizeAccessTag(user.tag || user.shareTag) || cleanTag,
         };
@@ -233,7 +234,7 @@ function createUserService({
     }
 
     return {
-      phone: siteUser.phone || '',
+      phone: siteUser.phone || phone || '',
       name: siteUser.nome || siteUser.name || '',
       tag: cleanTag,
       shareTag: cleanTag,

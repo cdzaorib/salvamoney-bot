@@ -446,7 +446,7 @@ function paidNotificationMessage(charge, actorName) {
   return `${actorName} marcou como paga a cobrança de ${formatMoney(charge.valorCobrado)} referente a ${charge.descricao || 'Cobrança'}.`;
 }
 
-function createdChargeMessage(charge, registeredExpense, notified) {
+function createdChargeMessage(charge, registeredExpense, notified, expenseRegistrationFailed = false) {
   const lines = [
     'Cobrança criada ✅',
     `${charge.descricao || 'Cobrança'} — ${formatMoney(charge.valorCobrado)} para ${charge.nomeDestino || charge.tagDestino}.`,
@@ -454,6 +454,10 @@ function createdChargeMessage(charge, registeredExpense, notified) {
 
   if (registeredExpense) {
     lines.push(`Também registrei o gasto total de ${formatMoney(charge.valorTotal)} para você.`);
+  }
+
+  if (expenseRegistrationFailed) {
+    lines.push('A cobrança foi criada, mas não consegui registrar ou vincular o gasto automaticamente. Confira seus gastos.');
   }
 
   if (!notified) {
@@ -538,9 +542,9 @@ function createChargeService({
     }
 
     try {
-      await notificationSender(phone, message);
+      const sent = await notificationSender(phone, message);
 
-      return true;
+      return sent !== false;
     } catch (err) {
       console.error('Erro ao notificar cobrança:', err.response?.data || err.message || err);
 
@@ -576,8 +580,10 @@ function createChargeService({
   }
 
   async function writeChargeCopies(charge) {
-    await set(ref(db, sentChargePath(charge.tagOrigem, charge.id)), charge);
-    await set(ref(db, receivedChargePath(charge.tagDestino, charge.id)), charge);
+    await update(ref(db), {
+      [sentChargePath(charge.tagOrigem, charge.id)]: charge,
+      [receivedChargePath(charge.tagDestino, charge.id)]: charge,
+    });
   }
 
   async function updateChargeCopies(charge, fields) {
@@ -586,8 +592,14 @@ function createChargeService({
       updatedAt: now(),
     };
 
-    await update(ref(db, sentChargePath(charge.tagOrigem, charge.id)), data);
-    await update(ref(db, receivedChargePath(charge.tagDestino, charge.id)), data);
+    const multipathUpdate = {};
+
+    Object.entries(data).forEach(([key, value]) => {
+      multipathUpdate[`${sentChargePath(charge.tagOrigem, charge.id)}/${key}`] = value;
+      multipathUpdate[`${receivedChargePath(charge.tagDestino, charge.id)}/${key}`] = value;
+    });
+
+    await update(ref(db), multipathUpdate);
   }
 
   async function createCharge(session, parsedCharge) {
@@ -631,15 +643,8 @@ function createChargeService({
       updatedAt: timestamp,
       respondedAt: null,
     };
+    let expenseRegistrationFailed = false;
     let registeredExpense = false;
-
-    if (parsedCharge.registerExpense) {
-      const expenseRef = await registerOriginExpense(session, charge);
-
-      charge.origemGastoId = expenseRef.id;
-      charge.origemGastoMes = expenseRef.monthKey;
-      registeredExpense = true;
-    }
 
     try {
       await writeChargeCopies(charge);
@@ -649,9 +654,26 @@ function createChargeService({
       return 'Não consegui criar a cobrança com segurança agora. Tente novamente.';
     }
 
+    if (parsedCharge.registerExpense) {
+      try {
+        const expenseRef = await registerOriginExpense(session, charge);
+        const originFields = {
+          origemGastoId: expenseRef.id,
+          origemGastoMes: expenseRef.monthKey,
+        };
+
+        await updateChargeCopies(charge, originFields);
+        Object.assign(charge, originFields);
+        registeredExpense = true;
+      } catch (err) {
+        console.error('Erro ao registrar ou vincular gasto da cobrança:', err.response?.data || err.message || err);
+        expenseRegistrationFailed = true;
+      }
+    }
+
     const notified = await notify(charge.phoneDestino, createNotificationMessage(charge));
 
-    return createdChargeMessage(charge, registeredExpense, notified);
+    return createdChargeMessage(charge, registeredExpense, notified, expenseRegistrationFailed);
   }
 
   async function listCharges(session, scope) {

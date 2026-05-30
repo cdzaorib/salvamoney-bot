@@ -457,6 +457,7 @@ function assertNoFirebaseWrites(firebase) {
 
 function createService({
   configOverrides = {},
+  firebaseOpsOverrides = {},
   groqOverrides = {},
   notificationSender,
   randomInt,
@@ -480,7 +481,10 @@ function createService({
       ...configOverrides,
     },
     db: {},
-    firebaseOps: firebase.ops,
+    firebaseOps: {
+      ...firebase.ops,
+      ...firebaseOpsOverrides,
+    },
     groq: {
       ...groq,
       ...groqOverrides,
@@ -699,6 +703,67 @@ test('entrar 123456 links the phone to the access tag', async () => {
       updatedAt: todayIso(),
     },
   }]);
+});
+
+test('entrar blocks a phone that does not own the access tag', async () => {
+  const { savedSessions, service } = createService({
+    seed: protectedAccountSeed(),
+    useRealUserService: true,
+  });
+  const resposta = await service.processarMensagem('5511777777777', 'entrar 482913');
+
+  assert.equal(resposta, 'Essa tag pertence a outro WhatsApp. Use o WhatsApp original ou crie uma nova conta.');
+  assert.deepEqual(savedSessions, []);
+});
+
+test('entrar blocks a tag without an owner phone', async () => {
+  const { savedSessions, service } = createService({
+    seed: {
+      grupos: {
+        SALVAMONEY: {
+          usuarios: {
+            482913: {
+              nome: 'Carlos',
+              tag: '482913',
+            },
+          },
+        },
+      },
+    },
+    useRealUserService: true,
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'entrar 482913');
+
+  assert.equal(resposta, 'Não consegui confirmar o WhatsApp desta tag. Crie uma nova conta ou fale com o suporte.');
+  assert.deepEqual(savedSessions, []);
+});
+
+test('entrar accepts the owner phone from the shareTags index for a legacy profile', async () => {
+  const { savedSessions, service } = createService({
+    seed: {
+      grupos: {
+        SALVAMONEY: {
+          usuarios: {
+            482913: {
+              nome: 'Carlos',
+              tag: '482913',
+            },
+          },
+        },
+      },
+      shareTags: {
+        482913: {
+          phone: '5511999999999',
+        },
+      },
+    },
+    useRealUserService: true,
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'entrar 482913');
+
+  assert.match(resposta, /Pronto/);
+  assert.equal(savedSessions[0].phone, '5511999999999');
+  assert.equal(savedSessions[0].data.user, '482913');
 });
 
 test('entrar with missing tag asks to create an account', async () => {
@@ -2710,6 +2775,50 @@ test('weekly report routes report commands through AI provider router', async ()
   assertNoFirebaseWrites(firebase);
 });
 
+test('weekly report automatic preference requires a valid tag session', async () => {
+  const { firebase, service } = createService({
+    seed: expenseSeed(),
+    session: { group: 'SALVAMONEY', user: 'carlos' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'ativar relatório semanal');
+
+  assert.equal(resposta, 'Entre com sua tag de 6 dígitos usando: entrar 123456');
+  assertNoFirebaseWrites(firebase);
+});
+
+test('weekly report automatic preference commands are integrated without touching financial data', async () => {
+  const seed = expenseSeed({
+    mercado: {
+      cat: 'Alimentação',
+      date: todayIso(),
+      desc: 'Mercado',
+      value: 180,
+    },
+  });
+  const { firebase, service } = createService({
+    seed,
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const ativar = await service.processarMensagem('5511999999999', 'ativar relatório semanal');
+  const statusAtivo = await service.processarMensagem('5511999999999', 'status relatório semanal');
+  const desativar = await service.processarMensagem('5511999999999', 'desativar relatório semanal');
+  const statusDesativado = await service.processarMensagem('5511999999999', 'relatório semanal automático');
+
+  assert.equal(ativar, 'Relatório semanal ativado ✅ Vou te enviar todo domingo às 20h.');
+  assert.equal(statusAtivo, 'Relatório semanal automático está ativo: domingo às 20:00.');
+  assert.equal(desativar, 'Relatório semanal desativado.');
+  assert.equal(
+    statusDesativado,
+    'Relatório semanal automático está desativado. Para ativar, envie: ativar relatório semanal'
+  );
+  assert.equal(firebase.getValue(`grupos/SALVAMONEY/usuarios/482913/gastos/${currentMonthKey()}/mercado/value`), 180);
+  assert.equal(firebase.updates.length, 2);
+  assert.equal(firebase.updates[0].path, 'grupos/SALVAMONEY/usuarios/482913/preferencias/relatorioSemanal');
+  assert.equal(firebase.updates[1].path, 'grupos/SALVAMONEY/usuarios/482913/preferencias/relatorioSemanal');
+  assert.deepEqual(firebase.sets, []);
+  assert.deepEqual(firebase.removals, []);
+});
+
 test('expense query without a valid tag session asks to enter', async () => {
   const { firebase, service } = createService({
     seed: expenseSeed(),
@@ -3347,7 +3456,12 @@ test('creates a direct charge and notifies the destination phone', async () => {
   }]);
   assert.equal(firebase.sets.some((write) => write.path === 'grupos/SALVAMONEY/usuarios/482913'), false);
   assert.equal(firebase.sets.some((write) => write.path === 'grupos/SALVAMONEY/usuarios/123456'), false);
-  assert.deepEqual(firebase.updates, []);
+  assert.equal(firebase.updates.length, 1);
+  assert.equal(firebase.updates[0].path, '');
+  assert.deepEqual(Object.keys(firebase.updates[0].value).sort(), [
+    `grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/${id}`,
+    `grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/${id}`,
+  ].sort());
   assert.equal(firebase.removals.length, 0);
 });
 
@@ -3384,6 +3498,85 @@ test('creates a percentage charge and registers the origin expense when the user
   assert.equal(expense.value.cobrancaId, id);
   assert.equal(notifications.length, 1);
   assert.deepEqual(firebase.getValue(`grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/${id}`), sent[id]);
+  assert.equal(firebase.updates.length, 2);
+  assert.equal(firebase.updates[0].path, '');
+  assert.equal(firebase.updates[1].path, '');
+});
+
+test('charge creation failure does not leave one copy or an orphan origin expense', async () => {
+  const { firebase, service } = createService({
+    firebaseOpsOverrides: {
+      update: async () => {
+        throw new Error('firebase indisponível');
+      },
+    },
+    seed: chargeUsersSeed(),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913', name: 'Carlos' },
+  });
+  const resposta = await service.processarMensagem(
+    '5511999999999',
+    'almocei com Anna e gastei 100, ela paga 80%, tag dela 123456'
+  );
+
+  assert.equal(resposta, 'Não consegui criar a cobrança com segurança agora. Tente novamente.');
+  assert.deepEqual(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas'), {});
+  assert.deepEqual(firebase.getValue('grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas'), {});
+  assert.equal(firebase.pushes.length, 0);
+});
+
+test('origin expense association failure keeps consistent charge copies and reports the partial result', async () => {
+  let updateCalls = 0;
+  const firebase = createFakeFirebase(chargeUsersSeed());
+  const savedSessions = [];
+  const service = createBotService({
+    config,
+    db: {},
+    firebaseOps: {
+      ...firebase.ops,
+      update: async (path, value) => {
+        updateCalls++;
+
+        if (updateCalls === 2) {
+          throw new Error('associação indisponível');
+        }
+
+        return await firebase.ops.update(path, value);
+      },
+    },
+    groq,
+    logger: { info: () => {} },
+    safeLog,
+    sessionStore: {
+      getSession: async () => ({ group: 'SALVAMONEY', user: '482913', tag: '482913', name: 'Carlos' }),
+      saveSession: async (phone, data) => savedSessions.push({ phone, data }),
+    },
+  });
+  const resposta = await service.processarMensagem(
+    '5511999999999',
+    'almocei com Anna e gastei 100, ela paga 80%, tag dela 123456'
+  );
+  const sent = firebase.getValue('grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas');
+  const received = firebase.getValue('grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas');
+  const id = Object.keys(sent)[0];
+
+  assert.match(resposta, /Cobrança criada ✅/);
+  assert.match(resposta, /não consegui registrar ou vincular o gasto automaticamente/);
+  assert.equal(sent[id].origemGastoId, null);
+  assert.deepEqual(received[id], sent[id]);
+  assert.equal(firebase.pushes.length, 1);
+  assert.equal(firebase.pushes[0].value.cobrancaId, id);
+});
+
+test('charge creation reports when destination notification returns false', async () => {
+  const { service } = createService({
+    notificationSender: async () => false,
+    seed: chargeUsersSeed(),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'cobrar 80 de 123456 pelo almoço');
+
+  assert.match(resposta, /Cobrança criada ✅/);
+  assert.match(resposta, /não consegui notificar a pessoa automaticamente/);
 });
 
 test('charge creation rejects an unknown destination tag', async () => {
@@ -3523,9 +3716,14 @@ test('accepting a charge updates both copies and notifies the origin', async () 
   assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/status'), 'aceita');
   assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/status'), 'aceita');
   assert.equal(typeof firebase.getValue('grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/respondedAt'), 'string');
-  assert.deepEqual(firebase.updates.map((write) => write.path), [
-    'grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1',
-    'grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1',
+  assert.deepEqual(firebase.updates.map((write) => write.path), ['']);
+  assert.deepEqual(Object.keys(firebase.updates[0].value).sort(), [
+    'grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/respondedAt',
+    'grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/status',
+    'grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/updatedAt',
+    'grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/respondedAt',
+    'grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/status',
+    'grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/updatedAt',
   ]);
   assert.deepEqual(notifications, [{
     phone: '5511999999999',
@@ -3569,6 +3767,7 @@ test('declining a charge updates both copies and notifies the origin', async () 
   assert.equal(resposta, 'Você recusou a cobrança de R$ 80,00 referente a Almoço.');
   assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/status'), 'recusada');
   assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/status'), 'recusada');
+  assert.deepEqual(firebase.updates.map((write) => write.path), ['']);
   assert.deepEqual(notifications, [{
     phone: '5511999999999',
     message: 'Anna recusou sua cobrança de R$ 80,00 referente a Almoço.',
@@ -3611,6 +3810,7 @@ test('canceling a sent charge updates both copies and notifies the destination',
   assert.equal(resposta, 'Cobrança cancelada: Almoço — R$ 80,00.');
   assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/status'), 'cancelada');
   assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/status'), 'cancelada');
+  assert.deepEqual(firebase.updates.map((write) => write.path), ['']);
   assert.deepEqual(notifications, [{
     phone: '5511888888888',
     message: 'Carlos cancelou a cobrança de R$ 80,00 referente a Almoço.',
@@ -3671,11 +3871,15 @@ test('marking an accepted sent charge as paid updates both copies and notifies t
   assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/status'), 'paga');
   assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/status'), 'paga');
   assert.equal(typeof firebase.getValue('grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/paidAt'), 'string');
-  assert.deepEqual(firebase.updates.map((write) => write.path), [
-    'grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1',
-    'grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1',
+  assert.deepEqual(firebase.updates.map((write) => write.path), ['']);
+  assert.deepEqual(Object.keys(firebase.updates[0].value).sort(), [
+    'grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/paidAt',
+    'grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/status',
+    'grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/updatedAt',
+    'grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/paidAt',
+    'grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/status',
+    'grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/updatedAt',
   ]);
-  assert.deepEqual(Object.keys(firebase.updates[0].value).sort(), ['paidAt', 'status', 'updatedAt']);
   assert.deepEqual(notifications, [{
     phone: '5511888888888',
     message: 'Carlos marcou como paga a cobrança de R$ 80,00 referente a Almoço.',
@@ -3733,10 +3937,7 @@ test('marking an accepted received charge as paid updates both copies and notifi
   ].join('\n'));
   assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/status'), 'paga');
   assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/status'), 'paga');
-  assert.deepEqual(firebase.updates.map((write) => write.path), [
-    'grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1',
-    'grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1',
-  ]);
+  assert.deepEqual(firebase.updates.map((write) => write.path), ['']);
   assert.deepEqual(notifications, [{
     phone: '5511999999999',
     message: 'Anna marcou como paga a cobrança de R$ 80,00 referente a Almoço.',

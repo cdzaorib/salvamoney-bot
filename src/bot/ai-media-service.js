@@ -1,13 +1,12 @@
 'use strict';
 
 function createAiMediaService({
-  config,
+  aiProviderRouter,
   expenseService,
   groq,
   safeLog,
   todayIso,
 }) {
-  const { groqApiKey } = config;
   const {
     apagarGastoPorTexto,
     getResumoTexto,
@@ -15,7 +14,7 @@ function createAiMediaService({
     registrarGasto,
     registrarParcelamento,
   } = expenseService;
-  const { analisarImagem, baixarMediaComoBase64, chamarIA, transcreverAudio } = groq;
+  const { analisarImagem, baixarMediaComoBase64, transcreverAudio } = groq;
   const { logMediaUrl, logText, maskPhone } = safeLog;
 
   function errorDetails(err) {
@@ -29,7 +28,7 @@ function createAiMediaService({
     const system = `Você é o assistente financeiro do SalvaMoney, app de controle de gastos brasileiro.
 WhatsApp: direto, amigável, português brasileiro informal. Emojis com moderação.
 
-USUÁRIO: ${sessao.user} | GRUPO: ${sessao.group} | HOJE: ${hoje}
+HOJE: ${hoje}
 RESUMO DO MÊS: ${resumo}
 
 CATEGORIAS PERMITIDAS:
@@ -63,10 +62,18 @@ EXEMPLOS:
 
 Nunca invente valores. Se não informou valor ao registrar, pergunte.`;
 
-    const resposta = await chamarIA([
-      { role: 'system', content: system },
-      { role: 'user', content: texto },
-    ]);
+    const resposta = await aiProviderRouter.generateText({
+      task: 'legacy_financial_text_parser',
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: texto },
+      ],
+      fallback: null,
+    });
+
+    if (!resposta) {
+      return undefined;
+    }
 
     try {
       const match = resposta.match(/\{[\s\S]*?\}/);
@@ -103,10 +110,6 @@ Nunca invente valores. Se não informou valor ao registrar, pergunte.`;
   }
 
   async function processarTextoComIA(texto, sessao) {
-    if (!groqApiKey) {
-      return undefined;
-    }
-
     try {
       return await processarComIA(texto, sessao);
     } catch (err) {

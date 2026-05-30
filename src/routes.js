@@ -1,7 +1,7 @@
 'use strict';
 
 const { dashboardPage } = require('./dashboard-page');
-const { dashboardAuthorized, tokenMatches, webhookRequestToken } = require('./security');
+const { dashboardAuthorized, webhookAuthorized } = require('./security');
 
 function registerRoutes({
   app,
@@ -28,7 +28,7 @@ function registerRoutes({
 
   // ─── WEBHOOK ──────────────────────────────────────────────
   app.post('/webhook', async (req, res) => {
-    if (config.webhookToken && !tokenMatches(config.webhookToken, webhookRequestToken(req))) {
+    if (!webhookAuthorized(req, config.webhookToken, config.requireRouteTokens)) {
       console.warn('⚠️ Webhook recusado: token ausente ou inválido.');
       return res.status(401).json({ ok: false, error: 'Webhook não autorizado.' });
     }
@@ -118,7 +118,7 @@ function registerRoutes({
     try {
       res.setHeader('Cache-Control', 'no-store');
 
-      if (!dashboardAuthorized(req, config.dashboardToken)) {
+      if (!dashboardAuthorized(req, config.dashboardToken, config.requireRouteTokens)) {
         return res.status(401).json({
           ok: false,
           error: 'Dashboard não autorizado.',
@@ -191,7 +191,7 @@ function registerRoutes({
     try {
       res.setHeader('Cache-Control', 'no-store');
 
-      if (!dashboardAuthorized(req, config.dashboardToken)) {
+      if (!dashboardAuthorized(req, config.dashboardToken, config.requireRouteTokens)) {
         return res.status(401).json({
           ok: false,
           error: 'Dashboard não autorizado.',
