@@ -4,8 +4,9 @@ const express = require('express');
 require('dotenv').config();
 
 const { createBotService } = require('./src/bot-service');
+const { createWeeklyReportScheduler } = require('./src/bot/weekly-report-scheduler');
 const { config, validateEnv } = require('./src/config');
-const { createFirebaseDb } = require('./src/firebase-db');
+const { createFirebaseDb, getFirebaseOps } = require('./src/firebase-db');
 const { createMessageDedupe } = require('./src/message-dedupe');
 const { createGroqClient } = require('./src/providers/groq');
 const { createSendMessage } = require('./src/providers/whatsapp');
@@ -34,6 +35,16 @@ const botService = createBotService({
 });
 const messageDedupe = createMessageDedupe();
 const webhookParser = createWebhookParser();
+const weeklyReportScheduler = createWeeklyReportScheduler({
+  db,
+  enabled: config.weeklyReportSchedulerEnabled,
+  firebaseOps: getFirebaseOps(),
+  notificationSender: sendMessage,
+  timeZone: config.timeZone,
+  weeklyReportService: {
+    gerarRelatorioSemanal: botService.gerarRelatorioSemanal,
+  },
+});
 
 registerRoutes({
   app,
@@ -49,11 +60,13 @@ registerRoutes({
 // ─── GRACEFUL SHUTDOWN ────────────────────────────────────
 process.on('SIGTERM', () => {
   console.log('🛑 Encerrando...');
+  weeklyReportScheduler.stop();
   process.exit(0);
 });
 
 process.on('SIGINT', () => {
   console.log('🛑 Encerrando...');
+  weeklyReportScheduler.stop();
   process.exit(0);
 });
 
@@ -67,4 +80,11 @@ app.listen(config.port, () => {
   } else {
     console.log('⚠️ Groq AI desativado (só parser simples)');
   }
+
+  weeklyReportScheduler.start();
+  console.log(
+    config.weeklyReportSchedulerEnabled
+      ? '✅ Relatório semanal automático ativado para contas opt-in'
+      : '⚠️ Scheduler de relatório semanal desativado por configuração'
+  );
 });

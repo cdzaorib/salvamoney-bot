@@ -24,6 +24,12 @@ No Railway, vá em **Variables** e adicione cada linha do `.env`.
 
 Use `.env.example` como base. Mantenha tokens reais fora do repositório.
 
+O scheduler do relatório semanal automático fica ativo por padrão e envia somente para contas que fizeram opt-in pelo WhatsApp. Para desativar a rotina no processo, configure:
+
+```env
+WEEKLY_REPORT_SCHEDULER_ENABLED=false
+```
+
 ### 4. Pegue a URL do servidor
 O Railway vai gerar uma URL tipo:
 `https://salvamoney-bot-production.up.railway.app`

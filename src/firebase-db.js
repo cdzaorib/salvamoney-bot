@@ -109,6 +109,10 @@ async function remove(reference) {
   return await reference.remove();
 }
 
+async function transaction(reference, updateFunction) {
+  return await reference.transaction(updateFunction);
+}
+
 function getFirebaseOps() {
   return {
     get,
@@ -117,6 +121,7 @@ function getFirebaseOps() {
     ref,
     remove,
     set,
+    transaction,
     update,
   };
 }
@@ -130,5 +135,6 @@ module.exports = {
   ref,
   remove,
   set,
+  transaction,
   update,
 };

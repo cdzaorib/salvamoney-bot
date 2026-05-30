@@ -25,6 +25,7 @@ const { createMonthlySummaryService } = require('./bot/monthly-summary-service')
 const { createSavingsGoalService } = require('./bot/savings-goal-service');
 const { normalizeText } = require('./bot/text-utils');
 const { createWeeklyPlannerService } = require('./bot/weekly-planner-service');
+const { createWeeklyReportPreferencesService } = require('./bot/weekly-report-preferences-service');
 const { createWeeklyReportService } = require('./bot/weekly-report-service');
 const { parsearGasto, parsearParcelamento } = require('./expense-parser');
 const {
@@ -360,6 +361,10 @@ function createBotService({
     dateUtils,
     db,
     firebaseOps: { get, ref },
+  });
+  const weeklyReportPreferencesService = createWeeklyReportPreferencesService({
+    db,
+    firebaseOps: { get, ref, update },
   });
   const alertService = createAlertService({
     dateUtils,
@@ -823,6 +828,13 @@ function createBotService({
 
     // ── SEM SESSÃO VÁLIDA ──
     if (!hasValidAccessSession(sessao)) {
+      const respostaPreferenciaRelatorioSemanal =
+        await weeklyReportPreferencesService.processarPreferenciaRelatorioSemanal(sessao, msg);
+
+      if (respostaPreferenciaRelatorioSemanal) {
+        return respostaPreferenciaRelatorioSemanal;
+      }
+
       const respostaCobranca = await chargeService.processarCobranca(sessao, msg);
 
       if (respostaCobranca) {
@@ -890,6 +902,13 @@ ${SITE_URL}`;
     }
 
     const sessaoComPhone = sessionWithPhone(sessao, phone);
+
+    const respostaPreferenciaRelatorioSemanal =
+      await weeklyReportPreferencesService.processarPreferenciaRelatorioSemanal(sessaoComPhone, msg);
+
+    if (respostaPreferenciaRelatorioSemanal) {
+      return respostaPreferenciaRelatorioSemanal;
+    }
 
     const respostaCobranca = await chargeService.processarCobranca(sessaoComPhone, msg);
 
@@ -1059,6 +1078,7 @@ Ou *ajuda* para ver os comandos.`;
     MESES,
     apagarGastoPorId,
     dateParts,
+    gerarRelatorioSemanal: weeklyReportService.gerarRelatorioSemanal,
     getGastosMesComIds,
     processarMensagem,
   };

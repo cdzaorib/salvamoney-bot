@@ -329,11 +329,7 @@ function createWeeklyReportService({
     return snap.val() || {};
   }
 
-  async function processarRelatorioSemanal(session, text) {
-    if (!isWeeklyReportCommand(text)) {
-      return null;
-    }
-
+  async function gerarRelatorioSemanal(session, text = 'relatório da semana') {
     if (!hasValidAccessSession(session)) {
       return WEEKLY_REPORT_REQUIRED_MESSAGE;
     }
@@ -382,7 +378,16 @@ function createWeeklyReportService({
     });
   }
 
+  async function processarRelatorioSemanal(session, text) {
+    if (!isWeeklyReportCommand(text)) {
+      return null;
+    }
+
+    return await gerarRelatorioSemanal(session, text);
+  }
+
   return {
+    gerarRelatorioSemanal,
     processarRelatorioSemanal,
   };
 }
