@@ -272,6 +272,20 @@ function parseChargeListCommand(command) {
   return null;
 }
 
+function parseChargeSyncCommand(command) {
+  if ([
+    'corrigir cobrancas pendentes',
+    'sincronizar cobrancas',
+    'atualizar cobrancas nos gastos',
+  ].includes(command)) {
+    return {
+      action: 'sync',
+    };
+  }
+
+  return null;
+}
+
 function parseChargeResponseCommand(command) {
   const match = command.match(/^(aceitar|recusar)(?:\s+cobranca)?\s+(\d+)$/);
 
@@ -339,7 +353,8 @@ function parseChargePaidCommand(command) {
 function parseChargeCommand(text) {
   const command = normalizedCommand(text);
 
-  return parseChargeListCommand(command) ||
+  return parseChargeSyncCommand(command) ||
+    parseChargeListCommand(command) ||
     parseChargeResponseCommand(command) ||
     parseChargePaidCommand(command) ||
     parseChargeCancelCommand(command) ||
@@ -613,6 +628,18 @@ function createChargeService({
     await update(ref(db), multipathUpdate);
   }
 
+  function addChargeCopyFields(multipathUpdate, charge, fields) {
+    const data = {
+      ...fields,
+      updatedAt: now(),
+    };
+
+    Object.entries(data).forEach(([key, value]) => {
+      multipathUpdate[`${sentChargePath(charge.tagOrigem, charge.id)}/${key}`] = value;
+      multipathUpdate[`${receivedChargePath(charge.tagDestino, charge.id)}/${key}`] = value;
+    });
+  }
+
   function linkedExpenseFields(charge, status, timestamp) {
     const fields = {
       cobrancaStatus: status,
@@ -623,7 +650,7 @@ function createChargeService({
 
     if (status === 'paga') {
       fields.desc = `Pagamento cobrança - ${charge.descricao || 'Cobrança'}`;
-      fields.paidAt = timestamp;
+      fields.paidAt = charge.paidAt || timestamp;
     }
 
     return fields;
@@ -640,13 +667,22 @@ function createChargeService({
       user: charge.tagDestino,
       origem: 'cobranca',
       cobrancaId: charge.id,
-      createdAt: timestamp,
+      createdAt: charge.createdAt || timestamp,
       ...linkedExpenseFields(charge, status, timestamp),
     };
   }
 
+  function chargeReferenceDate(charge) {
+    const value = charge.createdAt || charge.date || '';
+    const parsed = /^\d{4}-\d{2}-\d{2}$/.test(value)
+      ? new Date(`${value}T12:00:00`)
+      : new Date(value);
+
+    return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+  }
+
   async function prepareLinkedExpenseUpdate(charge, status) {
-    const date = new Date();
+    const date = chargeReferenceDate(charge);
     const monthKey = charge.pendenteGastoMes || charge.pagamentoGastoMes || dateUtils.monthKey(date);
     const expenseId = charge.pendenteGastoId || charge.pagamentoGastoId || chargeExpenseId(charge.id);
     const expensePath = chargeExpensePath(charge.tagDestino, monthKey, expenseId);
@@ -677,6 +713,7 @@ function createChargeService({
           pagamentoGastoMes: monthKey,
         } : {}),
       },
+      created: !existingExpense,
       extraPaths,
     };
   }
@@ -785,6 +822,46 @@ function createChargeService({
     ]);
 
     return listAllMessage(received, sent);
+  }
+
+  async function syncReceivedCharges(session) {
+    const tag = normalizeAccessTag(session.tag || session.user);
+    const charges = await listReceivedCharges(tag);
+    const multipathUpdate = {};
+    let added = 0;
+
+    for (const charge of charges) {
+      if (!['pendente', 'aceita', 'paga'].includes(charge.status)) {
+        continue;
+      }
+
+      const destinationTag = normalizeAccessTag(charge.tagDestino);
+      const originTag = normalizeAccessTag(charge.tagOrigem);
+
+      if ((destinationTag && destinationTag !== tag) || !originTag) {
+        continue;
+      }
+
+      const safeCharge = {
+        ...charge,
+        tagDestino: tag,
+        tagOrigem: originTag,
+      };
+      const linkedExpense = await prepareLinkedExpenseUpdate(safeCharge, safeCharge.status);
+
+      Object.assign(multipathUpdate, linkedExpense.extraPaths);
+      addChargeCopyFields(multipathUpdate, safeCharge, linkedExpense.chargeFields);
+
+      if (linkedExpense.created) {
+        added++;
+      }
+    }
+
+    if (Object.keys(multipathUpdate).length) {
+      await update(ref(db), multipathUpdate);
+    }
+
+    return `Sincronização concluída ✅ ${added} cobrança(s) adicionada(s) aos gastos.`;
   }
 
   async function respondToCharge(session, index, status) {
@@ -952,6 +1029,16 @@ function createChargeService({
 
     if (command.action === 'list') {
       return await listCharges(session, command.scope);
+    }
+
+    if (command.action === 'sync') {
+      try {
+        return await syncReceivedCharges(session);
+      } catch (err) {
+        console.error('Erro ao sincronizar cobranças:', err.response?.data || err.message || err);
+
+        return 'Não consegui sincronizar as cobranças com segurança agora. Tente novamente.';
+      }
     }
 
     if (command.action === 'accept') {

@@ -62,6 +62,14 @@ function monthKeyOffset(offset) {
   return `${offsetParts.year}_${Number(offsetParts.month) - 1}`;
 }
 
+function isoMonthOffset(offset, day = 2) {
+  const parts = utcDateParts();
+  const date = new Date(Date.UTC(Number(parts.year), Number(parts.month) - 1 + offset, day, 12));
+  const offsetParts = utcDateParts(date);
+
+  return `${offsetParts.year}-${offsetParts.month}-${offsetParts.day}`;
+}
+
 function todayIso() {
   const parts = utcDateParts();
 
@@ -3416,6 +3424,212 @@ test('charge command without a valid tag session asks to enter', async () => {
   assertNoFirebaseWrites(firebase);
 });
 
+test('syncing charges without a valid tag session asks to enter', async () => {
+  const { firebase, service } = createService({
+    seed: chargeUsersSeed(),
+    session: { group: 'SALVAMONEY', user: 'anna' },
+  });
+  const resposta = await service.processarMensagem('5511888888888', 'sincronizar cobranças');
+
+  assert.equal(resposta, 'Entre com sua tag de 6 dígitos usando: entrar 123456');
+  assertNoFirebaseWrites(firebase);
+});
+
+test('syncing legacy pending charges creates the destination commitment in the original month', async () => {
+  const date = isoMonthOffset(-1);
+  const charge = {
+    id: 'c1',
+    descricao: 'Hambúrguer',
+    valorCobrado: 80,
+    tagOrigem: '482913',
+    nomeOrigem: 'Carlos',
+    tagDestino: '123456',
+    nomeDestino: 'Anna',
+    status: 'pendente',
+    createdAt: `${date}T12:00:00.000Z`,
+  };
+  const { firebase, service } = createService({
+    seed: chargeUsersSeed({
+      originCharges: {
+        c1: charge,
+      },
+      destinationCharges: {
+        c1: charge,
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '123456', tag: '123456' },
+  });
+  const resposta = await service.processarMensagem('5511888888888', 'corrigir cobranças pendentes');
+  const expense = firebase.getValue(`grupos/SALVAMONEY/usuarios/123456/gastos/${monthKeyOffset(-1)}/cob_c1`);
+
+  assert.equal(resposta, 'Sincronização concluída ✅ 1 cobrança(s) adicionada(s) aos gastos.');
+  assert.deepEqual(expense, {
+    desc: 'Cobrança pendente - Hambúrguer',
+    value: 80,
+    cat: 'Outros',
+    date,
+    user: '123456',
+    origem: 'cobranca',
+    cobrancaId: 'c1',
+    createdAt: charge.createdAt,
+    cobrancaStatus: 'pendente',
+    pendente: true,
+    cancelado: false,
+    updatedAt: expense.updatedAt,
+  });
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/pendenteGastoId'), 'cob_c1');
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/pendenteGastoMes'), monthKeyOffset(-1));
+  assert.deepEqual(firebase.updates.map((write) => write.path), ['']);
+});
+
+test('syncing legacy accepted charges creates an accepted pending commitment', async () => {
+  const charge = {
+    id: 'c1',
+    descricao: 'Sorvete',
+    valorCobrado: 25,
+    tagOrigem: '482913',
+    tagDestino: '123456',
+    status: 'aceita',
+    createdAt: `${todayIso()}T12:00:00.000Z`,
+  };
+  const { firebase, service } = createService({
+    seed: chargeUsersSeed({
+      originCharges: {
+        c1: charge,
+      },
+      destinationCharges: {
+        c1: charge,
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '123456', tag: '123456' },
+  });
+
+  await service.processarMensagem('5511888888888', 'sincronizar cobranças');
+  const expense = firebase.getValue(`grupos/SALVAMONEY/usuarios/123456/gastos/${currentMonthKey()}/cob_c1`);
+
+  assert.equal(expense.cobrancaStatus, 'aceita');
+  assert.equal(expense.pendente, true);
+  assert.equal(expense.cancelado, false);
+});
+
+test('syncing legacy paid charges creates a paid commitment and payment link', async () => {
+  const charge = {
+    id: 'c1',
+    descricao: 'Cinema',
+    valorCobrado: 40,
+    tagOrigem: '482913',
+    tagDestino: '123456',
+    status: 'paga',
+    paidAt: '2026-05-20T18:00:00.000Z',
+    createdAt: `${todayIso()}T12:00:00.000Z`,
+  };
+  const { firebase, service } = createService({
+    seed: chargeUsersSeed({
+      originCharges: {
+        c1: charge,
+      },
+      destinationCharges: {
+        c1: charge,
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '123456', tag: '123456' },
+  });
+
+  await service.processarMensagem('5511888888888', 'atualizar cobranças nos gastos');
+  const expense = firebase.getValue(`grupos/SALVAMONEY/usuarios/123456/gastos/${currentMonthKey()}/cob_c1`);
+
+  assert.equal(expense.desc, 'Pagamento cobrança - Cinema');
+  assert.equal(expense.cobrancaStatus, 'paga');
+  assert.equal(expense.pendente, false);
+  assert.equal(expense.paidAt, charge.paidAt);
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/pagamentoGastoId'), 'cob_c1');
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/pagamentoGastoMes'), currentMonthKey());
+});
+
+test('syncing charges twice does not duplicate destination commitments', async () => {
+  const charge = {
+    id: 'c1',
+    descricao: 'Hambúrguer',
+    valorCobrado: 80,
+    tagOrigem: '482913',
+    tagDestino: '123456',
+    status: 'pendente',
+    createdAt: `${todayIso()}T12:00:00.000Z`,
+  };
+  const { firebase, service } = createService({
+    seed: chargeUsersSeed({
+      originCharges: {
+        c1: charge,
+      },
+      destinationCharges: {
+        c1: charge,
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '123456', tag: '123456' },
+  });
+
+  await service.processarMensagem('5511888888888', 'sincronizar cobranças');
+  const resposta = await service.processarMensagem('5511888888888', 'sincronizar cobranças');
+  const expenses = firebase.getValue(`grupos/SALVAMONEY/usuarios/123456/gastos/${currentMonthKey()}`);
+
+  assert.equal(resposta, 'Sincronização concluída ✅ 0 cobrança(s) adicionada(s) aos gastos.');
+  assert.deepEqual(Object.keys(expenses), ['cob_c1']);
+});
+
+test('syncing charges does not write a commitment for another destination tag', async () => {
+  const charge = {
+    id: 'c1',
+    descricao: 'Hambúrguer',
+    valorCobrado: 80,
+    tagOrigem: '482913',
+    tagDestino: '654321',
+    status: 'pendente',
+    createdAt: `${todayIso()}T12:00:00.000Z`,
+  };
+  const { firebase, service } = createService({
+    seed: chargeUsersSeed({
+      destinationCharges: {
+        c1: charge,
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '123456', tag: '123456' },
+  });
+  const resposta = await service.processarMensagem('5511888888888', 'sincronizar cobranças');
+
+  assert.equal(resposta, 'Sincronização concluída ✅ 0 cobrança(s) adicionada(s) aos gastos.');
+  assertNoFirebaseWrites(firebase);
+  assert.equal(firebase.getValue(`grupos/SALVAMONEY/usuarios/654321/gastos/${currentMonthKey()}/cob_c1`), undefined);
+});
+
+test('monthly summary sees a legacy pending commitment after charge synchronization', async () => {
+  const charge = {
+    id: 'c1',
+    descricao: 'Hambúrguer',
+    valorCobrado: 80,
+    tagOrigem: '482913',
+    tagDestino: '123456',
+    status: 'pendente',
+    createdAt: `${todayIso()}T12:00:00.000Z`,
+  };
+  const { service } = createService({
+    seed: chargeUsersSeed({
+      originCharges: {
+        c1: charge,
+      },
+      destinationCharges: {
+        c1: charge,
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '123456', tag: '123456' },
+  });
+
+  await service.processarMensagem('5511888888888', 'sincronizar cobranças');
+  const resposta = await service.processarMensagem('5511888888888', 'resumo do mês');
+
+  assert.match(resposta, /Total gasto: R\$ 80,00/);
+  assert.doesNotMatch(resposta, /ainda não tem gastos registrados neste mês/i);
+});
+
 test('creates a direct charge and notifies the destination phone', async () => {
   const notifications = [];
   const { firebase, service } = createService({
@@ -3990,7 +4204,7 @@ test('marking an accepted received charge as paid updates both copies and notifi
       desc: 'Pagamento cobrança - Almoço',
       value: 80,
       cat: 'Outros',
-      date: todayIso(),
+      date: '2026-05-02',
       user: '123456',
       origem: 'cobranca',
       cobrancaId: 'c1',
