@@ -57,6 +57,47 @@ test('transaction store lists monthly expenses from the legacy group user path',
   }]);
 });
 
+test('transaction store ignores canceled charge commitments but keeps their history in Firebase', async () => {
+  const { firebase, store } = createStore({
+    grupos: {
+      SALVAMONEY: {
+        usuarios: {
+          123456: {
+            gastos: {
+              '2026_4': {
+                cob_c1: {
+                  cobrancaId: 'c1',
+                  cobrancaStatus: 'cancelada',
+                  cancelado: true,
+                  desc: 'Cobrança pendente - Almoço',
+                  origem: 'cobranca',
+                  value: 80,
+                },
+                mercado: {
+                  desc: 'Mercado',
+                  value: 50,
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  const items = await store.listMonthlyExpensesWithIds({
+    group: 'SALVAMONEY',
+    user: '123456',
+  });
+
+  assert.deepEqual(items, [{
+    id: 'mercado',
+    desc: 'Mercado',
+    value: 50,
+  }]);
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/123456/gastos/2026_4/cob_c1/cobrancaStatus'), 'cancelada');
+});
+
 test('transaction store saves expenses only to the legacy group user path when phone is missing', async () => {
   const { firebase, store } = createStore();
   const expense = {

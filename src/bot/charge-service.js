@@ -65,11 +65,11 @@ function receivedChargePath(tag, id) {
   return `${receivedChargesPath(tag)}/${id}`;
 }
 
-function paymentExpenseId(chargeId) {
-  return `pag_${String(chargeId || '').replace(/[.#$\[\]\/]/g, '_')}`;
+function chargeExpenseId(chargeId) {
+  return `cob_${String(chargeId || '').replace(/[.#$\[\]\/]/g, '_')}`;
 }
 
-function paymentExpensePath(tag, monthKey, id) {
+function chargeExpensePath(tag, monthKey, id) {
   return `${userPath(tag)}/gastos/${monthKey}/${id}`;
 }
 
@@ -587,8 +587,9 @@ function createChargeService({
     };
   }
 
-  async function writeChargeCopies(charge) {
+  async function writeChargeCopies(charge, extraPaths = {}) {
     await update(ref(db), {
+      ...extraPaths,
       [sentChargePath(charge.tagOrigem, charge.id)]: charge,
       [receivedChargePath(charge.tagDestino, charge.id)]: charge,
     });
@@ -612,11 +613,43 @@ function createChargeService({
     await update(ref(db), multipathUpdate);
   }
 
-  async function markReceivedChargeAsPaid(charge) {
+  function linkedExpenseFields(charge, status, timestamp) {
+    const fields = {
+      cobrancaStatus: status,
+      pendente: status === 'pendente' || status === 'aceita',
+      cancelado: status === 'recusada' || status === 'cancelada',
+      updatedAt: timestamp,
+    };
+
+    if (status === 'paga') {
+      fields.desc = `Pagamento cobrança - ${charge.descricao || 'Cobrança'}`;
+      fields.paidAt = timestamp;
+    }
+
+    return fields;
+  }
+
+  function newLinkedExpense(charge, status, date, timestamp) {
+    return {
+      desc: status === 'paga'
+        ? `Pagamento cobrança - ${charge.descricao || 'Cobrança'}`
+        : `Cobrança pendente - ${charge.descricao || 'Cobrança'}`,
+      value: Number(charge.valorCobrado),
+      cat: 'Outros',
+      date: dateUtils.todayIso(date),
+      user: charge.tagDestino,
+      origem: 'cobranca',
+      cobrancaId: charge.id,
+      createdAt: timestamp,
+      ...linkedExpenseFields(charge, status, timestamp),
+    };
+  }
+
+  async function prepareLinkedExpenseUpdate(charge, status) {
     const date = new Date();
-    const monthKey = charge.pagamentoGastoMes || dateUtils.monthKey(date);
-    const expenseId = charge.pagamentoGastoId || paymentExpenseId(charge.id);
-    const expensePath = paymentExpensePath(charge.tagDestino, monthKey, expenseId);
+    const monthKey = charge.pendenteGastoMes || charge.pagamentoGastoMes || dateUtils.monthKey(date);
+    const expenseId = charge.pendenteGastoId || charge.pagamentoGastoId || chargeExpenseId(charge.id);
+    const expensePath = chargeExpensePath(charge.tagDestino, monthKey, expenseId);
     const expenseSnap = await get(ref(db, expensePath));
     const existingExpense = expenseSnap.exists() ? expenseSnap.val() : null;
 
@@ -625,25 +658,37 @@ function createChargeService({
     }
 
     const timestamp = now();
-    const extraPaths = existingExpense ? {} : {
-      [expensePath]: {
-        desc: `Pagamento cobrança - ${charge.descricao || 'Cobrança'}`,
-        value: Number(charge.valorCobrado),
-        cat: 'Outros',
-        date: dateUtils.todayIso(date),
-        user: charge.tagDestino,
-        origem: 'cobranca',
-        cobrancaId: charge.id,
-        createdAt: timestamp,
+    const extraPaths = {};
+
+    if (existingExpense) {
+      Object.entries(linkedExpenseFields(charge, status, timestamp)).forEach(([key, value]) => {
+        extraPaths[`${expensePath}/${key}`] = value;
+      });
+    } else {
+      extraPaths[expensePath] = newLinkedExpense(charge, status, date, timestamp);
+    }
+
+    return {
+      chargeFields: {
+        pendenteGastoId: expenseId,
+        pendenteGastoMes: monthKey,
+        ...(status === 'paga' ? {
+          pagamentoGastoId: expenseId,
+          pagamentoGastoMes: monthKey,
+        } : {}),
       },
+      extraPaths,
     };
+  }
+
+  async function updateChargeStatusAndExpense(charge, status, fields = {}) {
+    const linkedExpense = await prepareLinkedExpenseUpdate(charge, status);
 
     await updateChargeCopies(charge, {
-      status: 'paga',
-      paidAt: timestamp,
-      pagamentoGastoId: expenseId,
-      pagamentoGastoMes: monthKey,
-    }, extraPaths);
+      ...fields,
+      ...linkedExpense.chargeFields,
+      status,
+    }, linkedExpense.extraPaths);
   }
 
   async function createCharge(session, parsedCharge) {
@@ -691,7 +736,10 @@ function createChargeService({
     let registeredExpense = false;
 
     try {
-      await writeChargeCopies(charge);
+      const linkedExpense = await prepareLinkedExpenseUpdate(charge, 'pendente');
+
+      Object.assign(charge, linkedExpense.chargeFields);
+      await writeChargeCopies(charge, linkedExpense.extraPaths);
     } catch (err) {
       console.error('Erro ao criar cópias da cobrança:', err.response?.data || err.message || err);
 
@@ -749,8 +797,7 @@ function createChargeService({
     }
 
     try {
-      await updateChargeCopies(selected, {
-        status,
+      await updateChargeStatusAndExpense(selected, status, {
         respondedAt: now(),
       });
     } catch (err) {
@@ -795,8 +842,7 @@ function createChargeService({
     }
 
     try {
-      await updateChargeCopies(selected, {
-        status: 'cancelada',
+      await updateChargeStatusAndExpense(selected, 'cancelada', {
         respondedAt: now(),
       });
     } catch (err) {
@@ -861,20 +907,13 @@ function createChargeService({
     }
 
     try {
-      if (selected.type === 'received') {
-        await markReceivedChargeAsPaid(selected.charge);
-      } else {
-        await updateChargeCopies(selected.charge, {
-          status: 'paga',
-          paidAt: now(),
-        });
-      }
+      await updateChargeStatusAndExpense(selected.charge, 'paga', {
+        paidAt: now(),
+      });
     } catch (err) {
       console.error('Erro ao marcar cobrança como paga:', err.response?.data || err.message || err);
 
-      return selected.type === 'received'
-        ? 'Não consegui marcar a cobrança como paga nem registrar o gasto com segurança. Tente novamente.'
-        : 'Não consegui atualizar as duas cópias da cobrança. Tente novamente.';
+      return 'Não consegui marcar a cobrança como paga nem atualizar o gasto com segurança. Tente novamente.';
     }
 
     if (selected.type === 'received') {

@@ -1,6 +1,6 @@
 'use strict';
 
-const { createTransactionStore } = require('../services/transaction-store');
+const { createTransactionStore, isCountableExpense } = require('../services/transaction-store');
 const { DEFAULT_GROUP, normalizeAccessTag } = require('../services/user-service');
 const { normalizeText } = require('./text-utils');
 
@@ -348,7 +348,7 @@ function createWeeklyReportService({
 
         return Object.entries(snap.val() || {})
           .map(([id, expense]) => ({ id, ...expense }))
-          .filter((expense) => Number.isFinite(Number(expense?.value)));
+          .filter(isCountableExpense);
       })),
       readUserChild(session, 'perfilFinanceiro'),
       readUserChild(session, `metasEconomia/${currentMonthKey}`),

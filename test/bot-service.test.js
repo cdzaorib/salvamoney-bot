@@ -56,7 +56,7 @@ function currentMonthKey() {
 
 function monthKeyOffset(offset) {
   const parts = utcDateParts();
-  const date = new Date(Date.UTC(Number(parts.year), Number(parts.month) - 1 + offset, Number(parts.day)));
+  const date = new Date(Date.UTC(Number(parts.year), Number(parts.month) - 1 + offset, 1));
   const offsetParts = utcDateParts(date);
 
   return `${offsetParts.year}_${Number(offsetParts.month) - 1}`;
@@ -3446,9 +3446,32 @@ test('creates a direct charge and notifies the destination phone', async () => {
   assert.equal(sent[id].phoneOrigem, '5511999999999');
   assert.equal(sent[id].phoneDestino, '5511888888888');
   assert.equal(sent[id].status, 'pendente');
+  assert.equal(sent[id].pendenteGastoId, `cob_${id}`);
+  assert.equal(sent[id].pendenteGastoMes, currentMonthKey());
   assert.equal(typeof sent[id].createdAt, 'string');
   assert.equal(typeof sent[id].updatedAt, 'string');
   assert.deepEqual(received[id], sent[id]);
+  assert.deepEqual(
+    firebase.getValue(`grupos/SALVAMONEY/usuarios/123456/gastos/${currentMonthKey()}/cob_${id}`),
+    {
+      desc: 'Cobrança pendente - Almoço',
+      value: 80,
+      cat: 'Outros',
+      date: todayIso(),
+      user: '123456',
+      origem: 'cobranca',
+      cobrancaId: id,
+      createdAt: firebase.getValue(
+        `grupos/SALVAMONEY/usuarios/123456/gastos/${currentMonthKey()}/cob_${id}/createdAt`
+      ),
+      cobrancaStatus: 'pendente',
+      pendente: true,
+      cancelado: false,
+      updatedAt: firebase.getValue(
+        `grupos/SALVAMONEY/usuarios/123456/gastos/${currentMonthKey()}/cob_${id}/updatedAt`
+      ),
+    }
+  );
   assert.deepEqual(notifications, [{
     phone: '5511888888888',
     message: [
@@ -3468,6 +3491,7 @@ test('creates a direct charge and notifies the destination phone', async () => {
   assert.equal(firebase.updates[0].path, '');
   assert.deepEqual(Object.keys(firebase.updates[0].value).sort(), [
     `grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/${id}`,
+    `grupos/SALVAMONEY/usuarios/123456/gastos/${currentMonthKey()}/cob_${id}`,
     `grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/${id}`,
   ].sort());
   assert.equal(firebase.pushes.length, 0);
@@ -3726,14 +3750,13 @@ test('accepting a charge updates both copies and notifies the origin', async () 
   assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/status'), 'aceita');
   assert.equal(typeof firebase.getValue('grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/respondedAt'), 'string');
   assert.deepEqual(firebase.updates.map((write) => write.path), ['']);
-  assert.deepEqual(Object.keys(firebase.updates[0].value).sort(), [
-    'grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/respondedAt',
-    'grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/status',
-    'grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/updatedAt',
-    'grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/respondedAt',
-    'grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/status',
-    'grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/updatedAt',
-  ]);
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/123456/gastos/' + currentMonthKey() + '/cob_c1/cobrancaStatus'), 'aceita');
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/123456/gastos/' + currentMonthKey() + '/cob_c1/pendente'), true);
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/pendenteGastoId'), 'cob_c1');
+  assert.equal(
+    Object.hasOwn(firebase.updates[0].value, `grupos/SALVAMONEY/usuarios/123456/gastos/${currentMonthKey()}/cob_c1`),
+    true
+  );
   assert.deepEqual(notifications, [{
     phone: '5511999999999',
     message: 'Anna aceitou sua cobrança de R$ 80,00 referente a Almoço.',
@@ -3776,6 +3799,10 @@ test('declining a charge updates both copies and notifies the origin', async () 
   assert.equal(resposta, 'Você recusou a cobrança de R$ 80,00 referente a Almoço.');
   assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/status'), 'recusada');
   assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/status'), 'recusada');
+  assert.equal(firebase.getValue(`grupos/SALVAMONEY/usuarios/123456/gastos/${currentMonthKey()}/cob_c1/cobrancaStatus`), 'recusada');
+  assert.equal(firebase.getValue(`grupos/SALVAMONEY/usuarios/123456/gastos/${currentMonthKey()}/cob_c1/pendente`), false);
+  assert.equal(firebase.getValue(`grupos/SALVAMONEY/usuarios/123456/gastos/${currentMonthKey()}/cob_c1/cancelado`), true);
+  assert.deepEqual(Object.keys(firebase.getValue(`grupos/SALVAMONEY/usuarios/123456/gastos/${currentMonthKey()}`)), ['cob_c1']);
   assert.deepEqual(firebase.updates.map((write) => write.path), ['']);
   assert.deepEqual(notifications, [{
     phone: '5511999999999',
@@ -3819,6 +3846,10 @@ test('canceling a sent charge updates both copies and notifies the destination',
   assert.equal(resposta, 'Cobrança cancelada: Almoço — R$ 80,00.');
   assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/status'), 'cancelada');
   assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/status'), 'cancelada');
+  assert.equal(firebase.getValue(`grupos/SALVAMONEY/usuarios/123456/gastos/${currentMonthKey()}/cob_c1/cobrancaStatus`), 'cancelada');
+  assert.equal(firebase.getValue(`grupos/SALVAMONEY/usuarios/123456/gastos/${currentMonthKey()}/cob_c1/pendente`), false);
+  assert.equal(firebase.getValue(`grupos/SALVAMONEY/usuarios/123456/gastos/${currentMonthKey()}/cob_c1/cancelado`), true);
+  assert.deepEqual(Object.keys(firebase.getValue(`grupos/SALVAMONEY/usuarios/123456/gastos/${currentMonthKey()}`)), ['cob_c1']);
   assert.deepEqual(firebase.updates.map((write) => write.path), ['']);
   assert.deepEqual(notifications, [{
     phone: '5511888888888',
@@ -3881,14 +3912,13 @@ test('marking an accepted sent charge as paid updates both copies and notifies t
   assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/status'), 'paga');
   assert.equal(typeof firebase.getValue('grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/paidAt'), 'string');
   assert.deepEqual(firebase.updates.map((write) => write.path), ['']);
-  assert.deepEqual(Object.keys(firebase.updates[0].value).sort(), [
-    'grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/paidAt',
-    'grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/status',
-    'grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/updatedAt',
-    'grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/paidAt',
-    'grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/status',
-    'grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/updatedAt',
-  ]);
+  assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/pagamentoGastoId'), 'cob_c1');
+  assert.equal(firebase.getValue(`grupos/SALVAMONEY/usuarios/123456/gastos/${currentMonthKey()}/cob_c1/cobrancaStatus`), 'paga');
+  assert.equal(firebase.getValue(`grupos/SALVAMONEY/usuarios/123456/gastos/${currentMonthKey()}/cob_c1/pendente`), false);
+  assert.equal(
+    Object.hasOwn(firebase.updates[0].value, `grupos/SALVAMONEY/usuarios/123456/gastos/${currentMonthKey()}/cob_c1`),
+    true
+  );
   assert.deepEqual(notifications, [{
     phone: '5511888888888',
     message: 'Carlos marcou como paga a cobrança de R$ 80,00 referente a Almoço.',
@@ -3948,14 +3978,14 @@ test('marking an accepted received charge as paid updates both copies and notifi
   assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/status'), 'paga');
   assert.equal(
     firebase.getValue('grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/pagamentoGastoId'),
-    'pag_c1'
+    'cob_c1'
   );
   assert.equal(
     firebase.getValue('grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/pagamentoGastoMes'),
     currentMonthKey()
   );
   assert.deepEqual(
-    firebase.getValue(`grupos/SALVAMONEY/usuarios/123456/gastos/${currentMonthKey()}/pag_c1`),
+    firebase.getValue(`grupos/SALVAMONEY/usuarios/123456/gastos/${currentMonthKey()}/cob_c1`),
     {
       desc: 'Pagamento cobrança - Almoço',
       value: 80,
@@ -3965,7 +3995,16 @@ test('marking an accepted received charge as paid updates both copies and notifi
       origem: 'cobranca',
       cobrancaId: 'c1',
       createdAt: firebase.getValue(
-        `grupos/SALVAMONEY/usuarios/123456/gastos/${currentMonthKey()}/pag_c1/createdAt`
+        `grupos/SALVAMONEY/usuarios/123456/gastos/${currentMonthKey()}/cob_c1/createdAt`
+      ),
+      cobrancaStatus: 'paga',
+      pendente: false,
+      cancelado: false,
+      updatedAt: firebase.getValue(
+        `grupos/SALVAMONEY/usuarios/123456/gastos/${currentMonthKey()}/cob_c1/updatedAt`
+      ),
+      paidAt: firebase.getValue(
+        `grupos/SALVAMONEY/usuarios/123456/gastos/${currentMonthKey()}/cob_c1/paidAt`
       ),
     }
   );
@@ -3974,12 +4013,16 @@ test('marking an accepted received charge as paid updates both copies and notifi
     `grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/pagamentoGastoId`,
     `grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/pagamentoGastoMes`,
     `grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/paidAt`,
+    `grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/pendenteGastoId`,
+    `grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/pendenteGastoMes`,
     `grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/status`,
     `grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/updatedAt`,
-    `grupos/SALVAMONEY/usuarios/123456/gastos/${currentMonthKey()}/pag_c1`,
+    `grupos/SALVAMONEY/usuarios/123456/gastos/${currentMonthKey()}/cob_c1`,
     `grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/pagamentoGastoId`,
     `grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/pagamentoGastoMes`,
     `grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/paidAt`,
+    `grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/pendenteGastoId`,
+    `grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/pendenteGastoMes`,
     `grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/status`,
     `grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/updatedAt`,
   ].sort());
@@ -4023,9 +4066,68 @@ test('marking an accepted received charge as paid twice does not duplicate the p
   const expenses = firebase.getValue(`grupos/SALVAMONEY/usuarios/123456/gastos/${currentMonthKey()}`);
 
   assert.equal(resposta, 'Essa cobrança está paga e não pode ser marcada como paga.');
-  assert.deepEqual(Object.keys(expenses), ['pag_c1']);
-  assert.equal(expenses.pag_c1.cobrancaId, 'c1');
+  assert.deepEqual(Object.keys(expenses), ['cob_c1']);
+  assert.equal(expenses.cob_c1.cobrancaId, 'c1');
   assert.equal(firebase.updates.length, 1);
+});
+
+test('paying a linked pending charge updates the same destination commitment without duplication', async () => {
+  const charge = {
+    id: 'c1',
+    descricao: 'Almoço',
+    valorCobrado: 80,
+    tagOrigem: '482913',
+    nomeOrigem: 'Carlos',
+    phoneOrigem: '5511999999999',
+    tagDestino: '123456',
+    nomeDestino: 'Anna',
+    phoneDestino: '5511888888888',
+    status: 'aceita',
+    pendenteGastoId: 'cob_c1',
+    pendenteGastoMes: currentMonthKey(),
+    createdAt: '2026-05-02T12:00:00.000Z',
+  };
+  const { firebase, service } = createService({
+    seed: chargeUsersSeed({
+      originCharges: {
+        c1: charge,
+      },
+      destination: {
+        gastos: {
+          [currentMonthKey()]: {
+            cob_c1: {
+              desc: 'Cobrança pendente - Almoço',
+              value: 80,
+              cat: 'Outros',
+              date: todayIso(),
+              user: '123456',
+              origem: 'cobranca',
+              cobrancaId: 'c1',
+              cobrancaStatus: 'aceita',
+              pendente: true,
+              cancelado: false,
+            },
+          },
+        },
+      },
+      destinationCharges: {
+        c1: charge,
+      },
+    }),
+    session: { group: 'SALVAMONEY', user: '123456', tag: '123456' },
+  });
+
+  await service.processarMensagem('5511888888888', 'paguei cobrança 1');
+  const expenses = firebase.getValue(`grupos/SALVAMONEY/usuarios/123456/gastos/${currentMonthKey()}`);
+
+  assert.deepEqual(Object.keys(expenses), ['cob_c1']);
+  assert.equal(expenses.cob_c1.desc, 'Pagamento cobrança - Almoço');
+  assert.equal(expenses.cob_c1.cobrancaStatus, 'paga');
+  assert.equal(expenses.cob_c1.pendente, false);
+  assert.equal(
+    Object.hasOwn(firebase.updates[0].value, `grupos/SALVAMONEY/usuarios/123456/gastos/${currentMonthKey()}/cob_c1/cobrancaStatus`),
+    true
+  );
 });
 
 test('payer expense failure does not mark the accepted charge as paid or report success', async () => {
@@ -4062,7 +4164,7 @@ test('payer expense failure does not mark the accepted charge as paid or report 
 
   assert.equal(
     resposta,
-    'Não consegui marcar a cobrança como paga nem registrar o gasto com segurança. Tente novamente.'
+    'Não consegui marcar a cobrança como paga nem atualizar o gasto com segurança. Tente novamente.'
   );
   assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/123456/cobrancasRecebidas/c1/status'), 'aceita');
   assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas/c1/status'), 'aceita');

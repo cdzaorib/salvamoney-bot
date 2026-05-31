@@ -2,6 +2,18 @@
 
 const { getFirebaseOps } = require('../firebase-db');
 
+function isCountableExpense(item) {
+  const canceledCharge = item?.origem === 'cobranca' && (
+    item.cancelado === true ||
+    item.cobrancaStatus === 'recusada' ||
+    item.cobrancaStatus === 'cancelada'
+  );
+
+  return item &&
+    Number.isFinite(Number(item.value)) &&
+    !canceledCharge;
+}
+
 function createTransactionStore({
   db,
   firebaseOps,
@@ -50,7 +62,7 @@ function createTransactionStore({
 
     return Object.entries(snap.val() || {})
       .map(([id, item]) => ({ id, ...item }))
-      .filter((item) => item && Number.isFinite(Number(item.value)));
+      .filter(isCountableExpense);
   }
 
   async function listFixedExpensesWithIds({ group, user }) {
@@ -75,7 +87,7 @@ function createTransactionStore({
       const snap = await get(ref(db, legacyMonthlyExpensesPathByMonthKey(group, user, expenseMonthKey)));
 
       Object.entries(snap.val() || {}).forEach(([id, item]) => {
-        if (item && Number.isFinite(Number(item.value))) {
+        if (isCountableExpense(item)) {
           expenses.push({
             id,
             monthKey: expenseMonthKey,
@@ -217,4 +229,5 @@ function createTransactionStore({
 
 module.exports = {
   createTransactionStore,
+  isCountableExpense,
 };
