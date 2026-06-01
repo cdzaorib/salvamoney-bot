@@ -3601,7 +3601,7 @@ test('syncing charges does not write a commitment for another destination tag', 
   assert.equal(firebase.getValue(`grupos/SALVAMONEY/usuarios/654321/gastos/${currentMonthKey()}/cob_c1`), undefined);
 });
 
-test('monthly summary sees a legacy pending commitment after charge synchronization', async () => {
+test('monthly summary automatically syncs and sees a legacy pending commitment', async () => {
   const charge = {
     id: 'c1',
     descricao: 'Hambúrguer',
@@ -3623,11 +3623,55 @@ test('monthly summary sees a legacy pending commitment after charge synchronizat
     session: { group: 'SALVAMONEY', user: '123456', tag: '123456' },
   });
 
-  await service.processarMensagem('5511888888888', 'sincronizar cobranças');
   const resposta = await service.processarMensagem('5511888888888', 'resumo do mês');
 
   assert.match(resposta, /Total gasto: R\$ 80,00/);
   assert.doesNotMatch(resposta, /ainda não tem gastos registrados neste mês/i);
+});
+
+test('short summary automatically syncs accepted legacy charges', async () => {
+  const charges = {
+    c1: {
+      id: 'c1',
+      descricao: 'Hambúrguer',
+      valorCobrado: 80,
+      tagOrigem: '482913',
+      tagDestino: '123456',
+      status: 'aceita',
+      createdAt: `${todayIso()}T12:00:00.000Z`,
+    },
+    c2: {
+      id: 'c2',
+      descricao: 'Sorvete',
+      valorCobrado: 25,
+      tagOrigem: '482913',
+      tagDestino: '123456',
+      status: 'aceita',
+      createdAt: `${todayIso()}T13:00:00.000Z`,
+    },
+  };
+  const { firebase, service } = createService({
+    seed: chargeUsersSeed({
+      originCharges: charges,
+      destinationCharges: charges,
+    }),
+    session: { group: 'SALVAMONEY', user: '123456', tag: '123456' },
+  });
+  const resposta = await service.processarMensagem('5511888888888', 'resumo');
+  const expenses = firebase.getValue(`grupos/SALVAMONEY/usuarios/123456/gastos/${currentMonthKey()}`);
+
+  assert.match(resposta, /Total: R\$ 105,00/);
+  assert.match(resposta, /Cobrança aceita - Hambúrguer/);
+  assert.match(resposta, /Cobrança aceita - Sorvete/);
+  assert.deepEqual(Object.keys(expenses).sort(), ['cob_c1', 'cob_c2']);
+  assert.equal(expenses.cob_c1.cobrancaStatus, 'aceita');
+  assert.equal(expenses.cob_c2.cobrancaStatus, 'aceita');
+
+  const updateCount = firebase.updates.length;
+  const repeatedResponse = await service.processarMensagem('5511888888888', 'resumo');
+
+  assert.match(repeatedResponse, /Total: R\$ 105,00/);
+  assert.equal(firebase.updates.length, updateCount);
 });
 
 test('creates a direct charge and notifies the destination phone', async () => {
@@ -4204,7 +4248,7 @@ test('marking an accepted received charge as paid updates both copies and notifi
       desc: 'Pagamento cobrança - Almoço',
       value: 80,
       cat: 'Outros',
-      date: '2026-05-02',
+      date: todayIso(),
       user: '123456',
       origem: 'cobranca',
       cobrancaId: 'c1',

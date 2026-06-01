@@ -628,9 +628,17 @@ function createChargeService({
     await update(ref(db), multipathUpdate);
   }
 
-  function addChargeCopyFields(multipathUpdate, charge, fields) {
+  function addChargeCopyFields(multipathUpdate, charge, fields, { onlyIfChanged = false } = {}) {
+    const changedFields = onlyIfChanged
+      ? Object.fromEntries(Object.entries(fields).filter(([key, value]) => charge[key] !== value))
+      : fields;
+
+    if (!Object.keys(changedFields).length) {
+      return;
+    }
+
     const data = {
-      ...fields,
+      ...changedFields,
       updatedAt: now(),
     };
 
@@ -656,11 +664,19 @@ function createChargeService({
     return fields;
   }
 
+  function linkedExpenseDescription(charge, status) {
+    if (status === 'paga') {
+      return `Pagamento cobrança - ${charge.descricao || 'Cobrança'}`;
+    }
+
+    return status === 'aceita'
+      ? `Cobrança aceita - ${charge.descricao || 'Cobrança'}`
+      : `Cobrança pendente - ${charge.descricao || 'Cobrança'}`;
+  }
+
   function newLinkedExpense(charge, status, date, timestamp) {
     return {
-      desc: status === 'paga'
-        ? `Pagamento cobrança - ${charge.descricao || 'Cobrança'}`
-        : `Cobrança pendente - ${charge.descricao || 'Cobrança'}`,
+      desc: linkedExpenseDescription(charge, status),
       value: Number(charge.valorCobrado),
       cat: 'Outros',
       date: dateUtils.todayIso(date),
@@ -681,8 +697,11 @@ function createChargeService({
     return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
   }
 
-  async function prepareLinkedExpenseUpdate(charge, status) {
-    const date = chargeReferenceDate(charge);
+  async function prepareLinkedExpenseUpdate(charge, status, {
+    onlyIfChanged = false,
+    useChargeDate = false,
+  } = {}) {
+    const date = useChargeDate ? chargeReferenceDate(charge) : new Date();
     const monthKey = charge.pendenteGastoMes || charge.pagamentoGastoMes || dateUtils.monthKey(date);
     const expenseId = charge.pendenteGastoId || charge.pagamentoGastoId || chargeExpenseId(charge.id);
     const expensePath = chargeExpensePath(charge.tagDestino, monthKey, expenseId);
@@ -697,9 +716,18 @@ function createChargeService({
     const extraPaths = {};
 
     if (existingExpense) {
-      Object.entries(linkedExpenseFields(charge, status, timestamp)).forEach(([key, value]) => {
+      const fields = linkedExpenseFields(charge, status, timestamp);
+      const entries = onlyIfChanged
+        ? Object.entries(fields).filter(([key, value]) => key !== 'updatedAt' && existingExpense[key] !== value)
+        : Object.entries(fields);
+
+      entries.forEach(([key, value]) => {
         extraPaths[`${expensePath}/${key}`] = value;
       });
+
+      if (onlyIfChanged && entries.length) {
+        extraPaths[`${expensePath}/updatedAt`] = timestamp;
+      }
     } else {
       extraPaths[expensePath] = newLinkedExpense(charge, status, date, timestamp);
     }
@@ -824,7 +852,7 @@ function createChargeService({
     return listAllMessage(received, sent);
   }
 
-  async function syncReceivedCharges(session) {
+  async function syncReceivedCharges(session, { onlyIfChanged = false } = {}) {
     const tag = normalizeAccessTag(session.tag || session.user);
     const charges = await listReceivedCharges(tag);
     const multipathUpdate = {};
@@ -847,10 +875,13 @@ function createChargeService({
         tagDestino: tag,
         tagOrigem: originTag,
       };
-      const linkedExpense = await prepareLinkedExpenseUpdate(safeCharge, safeCharge.status);
+      const linkedExpense = await prepareLinkedExpenseUpdate(safeCharge, safeCharge.status, {
+        onlyIfChanged,
+        useChargeDate: true,
+      });
 
       Object.assign(multipathUpdate, linkedExpense.extraPaths);
-      addChargeCopyFields(multipathUpdate, safeCharge, linkedExpense.chargeFields);
+      addChargeCopyFields(multipathUpdate, safeCharge, linkedExpense.chargeFields, { onlyIfChanged });
 
       if (linkedExpense.created) {
         added++;
@@ -1062,6 +1093,7 @@ function createChargeService({
 
   return {
     processarCobranca,
+    syncReceivedCharges,
   };
 }
 

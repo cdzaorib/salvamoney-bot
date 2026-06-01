@@ -21,7 +21,7 @@ const { createFinancialAdvisorService } = require('./bot/financial-advisor-servi
 const { createFinancialProfileService } = require('./bot/financial-profile-service');
 const { createFixedExpenseService } = require('./bot/fixed-expense-service');
 const { createIntentRouterService } = require('./bot/intent-router-service');
-const { createMonthlySummaryService } = require('./bot/monthly-summary-service');
+const { createMonthlySummaryService, isMonthlySummaryCommand } = require('./bot/monthly-summary-service');
 const { createSavingsGoalService } = require('./bot/savings-goal-service');
 const { normalizeText } = require('./bot/text-utils');
 const { createWeeklyPlannerService } = require('./bot/weekly-planner-service');
@@ -401,6 +401,14 @@ function createBotService({
     safeLog,
     todayIso,
   });
+
+  async function syncReceivedChargesBeforeSummary(session) {
+    try {
+      await chargeService.syncReceivedCharges(session, { onlyIfChanged: true });
+    } catch (err) {
+      console.error('Erro ao sincronizar cobranças antes do resumo:', err.response?.data || err.message || err);
+    }
+  }
 
   function shouldCheckAlerts(response) {
     return typeof response === 'string' && /\b(registrado|parcelado)\b/i.test(response);
@@ -922,6 +930,10 @@ ${SITE_URL}`;
       return respostaAlerta;
     }
 
+    if (isMonthlySummaryCommand(msg)) {
+      await syncReceivedChargesBeforeSummary(sessaoComPhone);
+    }
+
     const respostaResumoMensal = await monthlySummaryService.processarResumoMensal(sessaoComPhone, msg);
 
     if (respostaResumoMensal) {
@@ -1001,6 +1013,8 @@ ${SITE_URL}`;
 
     // ── RESUMO ──
     if (isSummaryCommand(msgMin)) {
+      await syncReceivedChargesBeforeSummary(sessaoComPhone);
+
       return await montarResumoFormatado(sessaoComPhone);
     }
 
