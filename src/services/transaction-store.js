@@ -14,6 +14,31 @@ function isCountableExpense(item) {
     !canceledCharge;
 }
 
+function isPendingChargeCommitment(item) {
+  return item?.origem === 'cobranca' &&
+    item.cancelado !== true &&
+    (
+      item.pendente === true ||
+      item.cobrancaStatus === 'pendente' ||
+      item.cobrancaStatus === 'aceita'
+    );
+}
+
+function splitExpensesByPaymentStatus(expenses = []) {
+  return expenses.reduce((result, expense) => {
+    const target = isPendingChargeCommitment(expense)
+      ? result.pendingCommitments
+      : result.paidExpenses;
+
+    target.push(expense);
+
+    return result;
+  }, {
+    paidExpenses: [],
+    pendingCommitments: [],
+  });
+}
+
 function createTransactionStore({
   db,
   firebaseOps,
@@ -230,4 +255,6 @@ function createTransactionStore({
 module.exports = {
   createTransactionStore,
   isCountableExpense,
+  isPendingChargeCommitment,
+  splitExpensesByPaymentStatus,
 };

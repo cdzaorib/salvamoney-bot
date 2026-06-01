@@ -1701,7 +1701,9 @@ test('monthly summary reports totals, categories, profile usage, card and previo
   const resposta = await service.processarMensagem('5511999999999', 'como estou indo esse mês?');
 
   assert.match(resposta, /Resumo de .+ 📊/);
-  assert.match(resposta, /Total gasto: R\$ 180,00/);
+  assert.match(resposta, /Gastos pagos: R\$ 180,00/);
+  assert.match(resposta, /Cobranças pendentes: R\$ 0,00/);
+  assert.match(resposta, /Total comprometido: R\$ 180,00/);
   assert.match(resposta, /Registros: 4/);
   assert.match(resposta, /Maior categoria: Alimentação - R\$ 100,00/);
   assert.match(resposta, /Gastos fixos cadastrados: R\$ 130,00/);
@@ -1732,7 +1734,9 @@ test('monthly summary says when previous month history is missing and suggests p
   });
   const resposta = await service.processarMensagem('5511999999999', 'análise do mês');
 
-  assert.match(resposta, /Total gasto: R\$ 80,00/);
+  assert.match(resposta, /Gastos pagos: R\$ 80,00/);
+  assert.match(resposta, /Cobranças pendentes: R\$ 0,00/);
+  assert.match(resposta, /Total comprometido: R\$ 80,00/);
   assert.match(resposta, /Ainda não tenho histórico suficiente para comparar com o mês passado\./);
   assert.match(resposta, /Para análises melhores, me diga sua renda com: recebo 3000 todo dia 5/);
   assert.equal(firebase.pushes.length, 0);
@@ -1879,9 +1883,13 @@ test('monthly summary sends structured calculated data to AI', async () => {
   await service.processarMensagem('5511999999999', 'meu resumo');
 
   assert.equal(sentSummaryData.totalAtual, 180);
+  assert.equal(sentSummaryData.totalComprometido, 180);
+  assert.equal(sentSummaryData.compromissosPendentesTotal, 0);
   assert.equal(sentSummaryData.totalAnterior, 175);
   assert.equal(sentSummaryData.variacaoPercentual, 3);
   assert.equal(sentSummaryData.quantidadeRegistros, 4);
+  assert.equal(sentSummaryData.quantidadeGastosPagos, 4);
+  assert.equal(sentSummaryData.quantidadeCompromissosPendentes, 0);
   assert.deepEqual(sentSummaryData.maiorCategoria, {
     categoria: 'Alimentação',
     total: 100,
@@ -1936,7 +1944,8 @@ test('monthly summary falls back to deterministic response when Groq fails', asy
   const resposta = await service.processarMensagem('5511999999999', 'resumo do mês');
 
   assert.match(resposta, /Resumo de .+ 📊/);
-  assert.match(resposta, /Total gasto: R\$ 80,00/);
+  assert.match(resposta, /Gastos pagos: R\$ 80,00/);
+  assert.match(resposta, /Total comprometido: R\$ 80,00/);
   assert.match(resposta, /Ainda não tenho histórico suficiente/);
   assert.equal(firebase.pushes.length, 0);
   assert.deepEqual(firebase.sets, []);
@@ -1966,7 +1975,8 @@ test('monthly summary falls back without Groq configuration and does not call AI
   const resposta = await service.processarMensagem('5511999999999', 'resumo mensal');
 
   assert.equal(called, false);
-  assert.match(resposta, /Total gasto: R\$ 80,00/);
+  assert.match(resposta, /Gastos pagos: R\$ 80,00/);
+  assert.match(resposta, /Total comprometido: R\$ 80,00/);
 });
 
 test('monthly summary does not call AI when there are no current expenses', async () => {
@@ -3625,7 +3635,9 @@ test('monthly summary automatically syncs and sees a legacy pending commitment',
 
   const resposta = await service.processarMensagem('5511888888888', 'resumo do mês');
 
-  assert.match(resposta, /Total gasto: R\$ 80,00/);
+  assert.match(resposta, /Gastos pagos: R\$ 0,00/);
+  assert.match(resposta, /Cobranças pendentes: R\$ 80,00/);
+  assert.match(resposta, /Total comprometido: R\$ 80,00/);
   assert.doesNotMatch(resposta, /ainda não tem gastos registrados neste mês/i);
 });
 
@@ -3660,7 +3672,9 @@ test('short summary automatically syncs accepted legacy charges', async () => {
   const resposta = await service.processarMensagem('5511888888888', 'resumo');
   const expenses = firebase.getValue(`grupos/SALVAMONEY/usuarios/123456/gastos/${currentMonthKey()}`);
 
-  assert.match(resposta, /Total: R\$ 105,00/);
+  assert.match(resposta, /Gastos pagos: R\$ 0,00/);
+  assert.match(resposta, /Cobranças pendentes: R\$ 105,00/);
+  assert.match(resposta, /Total comprometido: R\$ 105,00/);
   assert.match(resposta, /Cobrança aceita - Hambúrguer/);
   assert.match(resposta, /Cobrança aceita - Sorvete/);
   assert.deepEqual(Object.keys(expenses).sort(), ['cob_c1', 'cob_c2']);
@@ -3670,7 +3684,7 @@ test('short summary automatically syncs accepted legacy charges', async () => {
   const updateCount = firebase.updates.length;
   const repeatedResponse = await service.processarMensagem('5511888888888', 'resumo');
 
-  assert.match(repeatedResponse, /Total: R\$ 105,00/);
+  assert.match(repeatedResponse, /Total comprometido: R\$ 105,00/);
   assert.equal(firebase.updates.length, updateCount);
 });
 
@@ -4652,7 +4666,9 @@ test('resumo summarizes the current month session expenses', async () => {
   const resposta = await service.processarMensagem('5511999999999', 'resumo');
 
   assert.match(resposta, /Resumo de/);
-  assert.match(resposta, /Total: R\$ 55,00/);
+  assert.match(resposta, /Gastos pagos: R\$ 55,00/);
+  assert.match(resposta, /Cobranças pendentes: R\$ 0,00/);
+  assert.match(resposta, /Total comprometido: R\$ 55,00/);
   assert.doesNotMatch(resposta, /novo caminho/);
 });
 

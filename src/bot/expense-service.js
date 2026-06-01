@@ -1,7 +1,7 @@
 'use strict';
 
 const { parseMoney } = require('../expense-parser');
-const { createTransactionStore } = require('../services/transaction-store');
+const { createTransactionStore, splitExpensesByPaymentStatus } = require('../services/transaction-store');
 const { categoriaFinal, detectarCategoria } = require('./categories');
 const { MESES } = require('./date-utils');
 const { normalizeText } = require('./text-utils');
@@ -11,6 +11,23 @@ function formatMoney(value) {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
+}
+
+function sumExpenses(expenses) {
+  return expenses.reduce((total, expense) => total + Number(expense.value || 0), 0);
+}
+
+function categoryLines(expenses, prefix = '') {
+  const byCategory = {};
+
+  expenses.forEach((expense) => {
+    byCategory[expense.cat || 'Outros'] =
+      (byCategory[expense.cat || 'Outros'] || 0) + Number(expense.value || 0);
+  });
+
+  return Object.entries(byCategory)
+    .sort((a, b) => b[1] - a[1])
+    .map(([category, value]) => `${prefix}${category}: ${formatMoney(value)}`);
 }
 
 function candidateLine(expense, index) {
@@ -174,20 +191,18 @@ function createExpenseService({
       return 'Nenhum gasto registrado este mês ainda.';
     }
 
-    const total = items.reduce((amount, expense) => amount + Number(expense.value || 0), 0);
-    const byCategory = {};
+    const { paidExpenses, pendingCommitments } = splitExpensesByPaymentStatus(items);
+    const paidTotal = sumExpenses(paidExpenses);
+    const pendingTotal = sumExpenses(pendingCommitments);
+    const categories = categoryLines(paidExpenses).join(', ') || 'nenhum gasto pago';
 
-    items.forEach((expense) => {
-      byCategory[expense.cat || 'Outros'] =
-        (byCategory[expense.cat || 'Outros'] || 0) + Number(expense.value || 0);
-    });
-
-    const categories = Object.entries(byCategory)
-      .sort((a, b) => b[1] - a[1])
-      .map(([category, value]) => `${category}: ${formatMoney(value)}`)
-      .join(', ');
-
-    return `Mês: ${MESES[Number(dateParts().month) - 1]}. Total: ${formatMoney(total)}. Por categoria: ${categories}.`;
+    return [
+      `Mês: ${MESES[Number(dateParts().month) - 1]}.`,
+      `Gastos pagos: ${formatMoney(paidTotal)}.`,
+      `Cobranças pendentes: ${formatMoney(pendingTotal)}.`,
+      `Total comprometido: ${formatMoney(paidTotal + pendingTotal)}.`,
+      `Gastos pagos por categoria: ${categories}.`,
+    ].join(' ');
   }
 
   async function montarResumoFormatado(session) {
@@ -201,43 +216,53 @@ function createExpenseService({
 ${siteUrl}`;
     }
 
-    const total = items.reduce((amount, expense) => amount + Number(expense.value || 0), 0);
-    const byCategory = {};
-
-    items.forEach((expense) => {
-      byCategory[expense.cat || 'Outros'] =
-        (byCategory[expense.cat || 'Outros'] || 0) + Number(expense.value || 0);
-    });
-
-    const categories = Object.entries(byCategory)
-      .sort((a, b) => b[1] - a[1])
-      .map(([category, value]) => `  • ${category}: ${formatMoney(value)}`)
-      .join('\n');
-
-    const recentExpenses = items
+    const { paidExpenses, pendingCommitments } = splitExpensesByPaymentStatus(items);
+    const paidTotal = sumExpenses(paidExpenses);
+    const pendingTotal = sumExpenses(pendingCommitments);
+    const totalCommitted = paidTotal + pendingTotal;
+    const categories = categoryLines(paidExpenses, '  • ').join('\n');
+    const recentExpenses = paidExpenses
       .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))
       .slice(0, 5)
       .map((expense, index) =>
         `  ${index + 1}. ${expense.desc || 'Gasto'} — ${formatMoney(expense.value)} (${expense.cat || 'Outros'})`
       )
       .join('\n');
-
-    return [
+    const pendingLines = pendingCommitments
+      .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))
+      .slice(0, 5)
+      .map((expense, index) => `  ${index + 1}. ${expense.desc || 'Cobrança'} — ${formatMoney(expense.value)}`)
+      .join('\n');
+    const lines = [
       `📊 *Resumo de ${month}*`,
       `👤 ${session.user} | Grupo: ${session.group}`,
       '',
-      categories,
-      '',
-      `💸 *Total: ${formatMoney(total)}*`,
-      '',
-      '🧾 *Últimos gastos:*',
-      recentExpenses,
+      `💸 *Gastos pagos: ${formatMoney(paidTotal)}*`,
+      `⏳ *Cobranças pendentes: ${formatMoney(pendingTotal)}*`,
+      `📌 *Total comprometido: ${formatMoney(totalCommitted)}*`,
+    ];
+
+    if (categories) {
+      lines.push('', '📂 *Gastos pagos por categoria:*', categories);
+    }
+
+    if (recentExpenses) {
+      lines.push('', '🧾 *Últimos gastos pagos:*', recentExpenses);
+    }
+
+    if (pendingLines) {
+      lines.push('', '⏳ *Pendências:*', pendingLines);
+    }
+
+    lines.push(
       '',
       '🌐 Ver no site:',
       siteUrl,
       '',
-      'Para apagar: _apagar último_ ou _apagar [valor]_',
-    ].join('\n');
+      'Para apagar: _apagar último_ ou _apagar [valor]_'
+    );
+
+    return lines.join('\n');
   }
 
   async function montarListaGastos(session) {

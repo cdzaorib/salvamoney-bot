@@ -2,7 +2,10 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createTransactionStore } = require('../src/services/transaction-store');
+const {
+  createTransactionStore,
+  splitExpensesByPaymentStatus,
+} = require('../src/services/transaction-store');
 const { createFakeFirebase } = require('./helpers/fake-firebase');
 
 function createStore(seed = {}) {
@@ -96,6 +99,33 @@ test('transaction store ignores canceled charge commitments but keeps their hist
     value: 50,
   }]);
   assert.equal(firebase.getValue('grupos/SALVAMONEY/usuarios/123456/gastos/2026_4/cob_c1/cobrancaStatus'), 'cancelada');
+});
+
+test('transaction store separates pending charge commitments from paid expenses', () => {
+  const expenses = [{
+    id: 'mercado',
+    desc: 'Mercado',
+    value: 50,
+  }, {
+    id: 'cob_c1',
+    cobrancaStatus: 'aceita',
+    desc: 'Cobrança aceita - Almoço',
+    origem: 'cobranca',
+    pendente: true,
+    value: 80,
+  }, {
+    id: 'cob_c2',
+    cobrancaStatus: 'paga',
+    desc: 'Pagamento cobrança - Cinema',
+    origem: 'cobranca',
+    pendente: false,
+    value: 40,
+  }];
+
+  assert.deepEqual(splitExpensesByPaymentStatus(expenses), {
+    paidExpenses: [expenses[0], expenses[2]],
+    pendingCommitments: [expenses[1]],
+  });
 });
 
 test('transaction store saves expenses only to the legacy group user path when phone is missing', async () => {

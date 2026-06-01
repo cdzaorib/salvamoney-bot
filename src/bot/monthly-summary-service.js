@@ -1,6 +1,6 @@
 'use strict';
 
-const { createTransactionStore } = require('../services/transaction-store');
+const { createTransactionStore, splitExpensesByPaymentStatus } = require('../services/transaction-store');
 const { DEFAULT_GROUP, normalizeAccessTag } = require('../services/user-service');
 const { MESES } = require('./date-utils');
 const { normalizeText } = require('./text-utils');
@@ -189,7 +189,7 @@ function categoryTrend(currentByCategory, previousByCategory) {
     null;
 }
 
-function profileUsageLine(summary, profile) {
+function profileUsageLine(summary, profile, pendingTotal = 0) {
   const rendaMensal = validPositiveNumber(profile?.rendaMensal);
   const orcamentoMensal = validPositiveNumber(profile?.orcamentoMensal);
   const parts = [];
@@ -206,18 +206,22 @@ function profileUsageLine(summary, profile) {
     return '';
   }
 
-  if (parts.length === 1) {
-    return `Você usou ${parts[0]}.`;
-  }
+  const usage = parts.length === 1
+    ? parts[0]
+    : `${parts[0]} e ${parts[1]}`;
 
-  return `Você usou ${parts[0]} e ${parts[1]}.`;
+  return pendingTotal > 0
+    ? `Considerando pagamentos e pendências, você comprometeu ${usage}.`
+    : `Você usou ${usage}.`;
 }
 
 function buildSummaryData({
   currentSummary,
+  committedSummary = currentSummary,
   dateUtils,
   fixedTotal,
   hasPreviousHistory,
+  pendingSummary = summarizeExpenses([]),
   previousSummary,
   profile,
 }) {
@@ -228,19 +232,23 @@ function buildSummaryData({
   return {
     monthLabel: monthName(dateUtils),
     totalAtual: currentSummary.total,
+    totalComprometido: committedSummary.total,
+    compromissosPendentesTotal: pendingSummary.total,
     totalAnterior: hasPreviousHistory ? previousSummary.total : null,
     variacaoPercentual: hasPreviousHistory
       ? percentChange(currentSummary.total, previousSummary.total)
       : null,
-    quantidadeRegistros: currentSummary.count,
-    topCategorias: currentSummary.categories.slice(0, 3).map((category) => ({
+    quantidadeRegistros: committedSummary.count,
+    quantidadeGastosPagos: currentSummary.count,
+    quantidadeCompromissosPendentes: pendingSummary.count,
+    topCategorias: committedSummary.categories.slice(0, 3).map((category) => ({
       categoria: category.name,
       total: Math.round(category.value * 100) / 100,
     })),
-    maiorCategoria: currentSummary.topCategory
+    maiorCategoria: committedSummary.topCategory
       ? {
-        categoria: currentSummary.topCategory.name,
-        total: Math.round(currentSummary.topCategory.value * 100) / 100,
+        categoria: committedSummary.topCategory.name,
+        total: Math.round(committedSummary.topCategory.value * 100) / 100,
       }
       : null,
     categoriaQueMaisSubiu: hasPreviousHistory
@@ -249,10 +257,10 @@ function buildSummaryData({
     rendaMensal,
     orcamentoMensal,
     percentualRenda: rendaMensal
-      ? Math.round((currentSummary.total / rendaMensal) * 100)
+      ? Math.round((committedSummary.total / rendaMensal) * 100)
       : null,
     percentualOrcamento: orcamentoMensal
-      ? Math.round((currentSummary.total / orcamentoMensal) * 100)
+      ? Math.round((committedSummary.total / orcamentoMensal) * 100)
       : null,
     vencimentoCartao: Number.isInteger(vencimentoCartao) && vencimentoCartao >= 1 && vencimentoCartao <= 31
       ? vencimentoCartao
@@ -271,6 +279,8 @@ function buildAiPrompt(summaryData) {
         'Use apenas os números recebidos nos dados estruturados.',
         'Não invente números, categorias, datas ou percentuais.',
         'Não faça os cálculos principais; eles já foram feitos.',
+        'Diferencie gastos pagos, cobranças pendentes e total comprometido.',
+        'Nunca trate uma cobrança pendente como gasto já pago.',
         'Não recomende investimentos específicos.',
         'Dê no máximo 2 dicas práticas.',
         'Se não houver dados suficientes, diga isso claramente.',
@@ -333,30 +343,34 @@ function practicalTip(summary, profile) {
 
 function buildMonthlySummaryMessage({
   currentSummary,
+  committedSummary = currentSummary,
   dateUtils,
   fixedTotal,
   hasPreviousHistory,
+  pendingSummary = summarizeExpenses([]),
   previousSummary,
   profile,
 }) {
-  if (!currentSummary.count) {
+  if (!committedSummary.count) {
     return 'Você ainda não tem gastos registrados neste mês.';
   }
 
   const lines = [
     `Resumo de ${monthName(dateUtils)} 📊`,
     '',
-    `Total gasto: ${formatMoney(currentSummary.total)}`,
-    `Registros: ${currentSummary.count}`,
-    `Maior categoria: ${currentSummary.topCategory.name} - ${formatMoney(currentSummary.topCategory.value)}`,
+    `Gastos pagos: ${formatMoney(currentSummary.total)}`,
+    `Cobranças pendentes: ${formatMoney(pendingSummary.total)}`,
+    `Total comprometido: ${formatMoney(committedSummary.total)}`,
+    `Registros: ${committedSummary.count}`,
+    `Maior categoria: ${committedSummary.topCategory.name} - ${formatMoney(committedSummary.topCategory.value)}`,
     `Gastos fixos cadastrados: ${formatMoney(fixedTotal)}`,
     'Top categorias:',
-    ...currentSummary.categories
+    ...committedSummary.categories
       .slice(0, 3)
       .map((category, index) => `${index + 1}. ${category.name} - ${formatMoney(category.value)}`),
   ];
 
-  const usageLine = profileUsageLine(currentSummary, profile);
+  const usageLine = profileUsageLine(committedSummary, profile, pendingSummary.total);
 
   if (usageLine) {
     lines.push('', usageLine);
@@ -384,7 +398,7 @@ function buildMonthlySummaryMessage({
     lines.push('', ...dueLines);
   }
 
-  lines.push('', practicalTip(currentSummary, profile));
+  lines.push('', practicalTip(committedSummary, profile));
 
   return lines.join('\n');
 }
@@ -432,15 +446,21 @@ function createMonthlySummaryService({
       getProfile(session),
     ]);
 
-    const currentSummary = summarizeExpenses(currentExpenses);
-    const previousSummary = summarizeExpenses(previousExpenses);
+    const currentStatus = splitExpensesByPaymentStatus(currentExpenses);
+    const previousStatus = splitExpensesByPaymentStatus(previousExpenses);
+    const currentSummary = summarizeExpenses(currentStatus.paidExpenses);
+    const pendingSummary = summarizeExpenses(currentStatus.pendingCommitments);
+    const committedSummary = summarizeExpenses(currentExpenses);
+    const previousSummary = summarizeExpenses(previousStatus.paidExpenses);
     const fixedTotal = fixedExpenses.reduce((total, item) => total + Number(item.value || 0), 0);
 
     const messageInput = {
+      committedSummary,
       currentSummary,
       dateUtils,
       fixedTotal,
       hasPreviousHistory: previousSummary.count > 0,
+      pendingSummary,
       previousSummary,
       profile,
     };
