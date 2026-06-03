@@ -307,6 +307,7 @@ function createBotService({
     montarListaGastos,
     montarResumoFormatado,
     montarResumoHoje,
+    processarCategoriaPersonalizada,
     registrarGasto,
     registrarParcelamento,
   } = expenseService;
@@ -767,6 +768,7 @@ function createBotService({
         '- gastei 120 em 3x no cartão',
         '- apagar mercado',
         '- quanto gastei com delivery esse mês?',
+        '- adicionar categoria Pets com ração, veterinário, petshop',
         '',
         'Fixos:',
         '- gasto fixo internet 99 dia 10',
@@ -922,6 +924,12 @@ ${SITE_URL}`;
 
     if (respostaCobranca) {
       return respostaCobranca;
+    }
+
+    const respostaCategoriaPersonalizada = await processarCategoriaPersonalizada(sessaoComPhone, msg);
+
+    if (respostaCategoriaPersonalizada) {
+      return respostaCategoriaPersonalizada;
     }
 
     const respostaAlerta = await alertService.processarComandoAlerta(sessaoComPhone, msg);

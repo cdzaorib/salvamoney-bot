@@ -143,7 +143,7 @@ function extractDirectChargeValue(text) {
 
 function inferDescription(text) {
   const original = String(text || '').trim();
-  const referenced = original.match(/\b(?:pelo|pela|por|referente\s+a)\s+([^,.;]+)/i);
+  const referenced = original.match(/\b(?:pelo|pela|por|referente\s+a|referente\s+ao?|no|na|em)\s+([^,.;]+)/i);
 
   if (referenced?.[1]) {
     return capitalize(referenced[1]
@@ -172,7 +172,38 @@ function inferDescription(text) {
     return 'Transporte';
   }
 
-  return 'Cobrança';
+  const cleaned = original
+    .replace(/\b\d{6}\b/g, ' ')
+    .replace(/\b20\d{2}-\d{2}-\d{2}\b/g, ' ')
+    .replace(/\b(?:dia\s+)?\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b/gi, ' ')
+    .replace(MONEY_PATTERN_GLOBAL, ' ')
+    .replace(/\b(?:cobrar|cobranca|cobrança|criar|tag|dele|dela|para|pra|do|da|de|o|a|um|uma|que|ele|ela|vai|pagar|paga|me|faz)\b/gi, ' ')
+    .replace(/\b\d{1,3}(?:[,.]\d{1,2})?\s*%/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return cleaned ? capitalize(cleaned) : 'Cobrança';
+}
+
+function parseChargeDate(text) {
+  const iso = String(text || '').match(/\b(20\d{2}-\d{2}-\d{2})\b/);
+
+  if (iso) {
+    return iso[1];
+  }
+
+  const br = String(text || '').match(/\b(?:dia\s+)?(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/);
+
+  if (!br) {
+    return null;
+  }
+
+  const day = br[1].padStart(2, '0');
+  const month = br[2].padStart(2, '0');
+  const rawYear = br[3] || String(new Date().getFullYear());
+  const year = rawYear.length === 2 ? `20${rawYear}` : rawYear;
+
+  return `${year}-${month}-${day}`;
 }
 
 function hasChargeIntent(command) {
@@ -237,6 +268,7 @@ function parseChargeCreateCommand(text) {
   return {
     action: 'create',
     charge: {
+      data: parseChargeDate(text),
       descricao: inferDescription(text),
       percentual: percent.found ? percent.value : null,
       registerExpense: shouldRegisterOriginExpense(command) && Boolean(valorTotal),
@@ -326,7 +358,8 @@ function parseChargePaidCommand(command) {
     };
   }
 
-  match = command.match(/^recebi(?:\s+o\s+pagamento\s+da)?\s+cobranca\s+(\d+)$/);
+  match = command.match(/^recebi(?:\s+o\s+pagamento\s+da)?\s+cobranca\s+(\d+)$/) ||
+    command.match(/^recebi\s+(\d+)$/);
 
   if (match) {
     return {
@@ -387,7 +420,7 @@ function chargeLine(charge, index, type) {
     ? `de ${charge.nomeOrigem || charge.tagOrigem}`
     : `para ${charge.nomeDestino || charge.tagDestino}`;
 
-  return `${index + 1}. ${charge.descricao || 'Cobrança'} — ${formatMoney(charge.valorCobrado)} — ${person} — ${charge.status || 'pendente'} — ${dateLabel(charge.createdAt)}`;
+  return `${index + 1}. ${charge.descricao || 'Cobrança'} — ${formatMoney(charge.valorCobrado)} — ${person} — ${charge.status || 'pendente'} — ${dateLabel(charge.data || charge.createdAt)}`;
 }
 
 function pendingChargeLine(charge, index, type) {
@@ -445,6 +478,7 @@ function createNotificationMessage(charge) {
     `${charge.nomeOrigem || charge.tagOrigem} te enviou uma cobrança:`,
     charge.descricao || 'Cobrança',
     `Valor: ${formatMoney(charge.valorCobrado)}`,
+    `Data: ${dateLabel(charge.data || charge.createdAt)}`,
     '',
     'Responda:',
     'aceitar cobrança 1',
@@ -473,6 +507,7 @@ function createdChargeMessage(charge, registeredExpense, notified, expenseRegist
   const lines = [
     'Cobrança criada ✅',
     `${charge.descricao || 'Cobrança'} — ${formatMoney(charge.valorCobrado)} para ${charge.nomeDestino || charge.tagDestino}.`,
+    `Data: ${dateLabel(charge.data || charge.createdAt)}.`,
   ];
 
   if (registeredExpense) {
@@ -576,7 +611,7 @@ function createChargeService({
   }
 
   async function registerOriginExpense(session, charge) {
-    const date = new Date();
+    const date = chargeReferenceDate(charge);
     const result = await transactionStore.saveExpense({
       date,
       group: DEFAULT_GROUP,
@@ -689,7 +724,7 @@ function createChargeService({
   }
 
   function chargeReferenceDate(charge) {
-    const value = charge.createdAt || charge.date || '';
+    const value = charge.data || charge.date || charge.createdAt || '';
     const parsed = /^\d{4}-\d{2}-\d{2}$/.test(value)
       ? new Date(`${value}T12:00:00`)
       : new Date(value);
@@ -784,6 +819,7 @@ function createChargeService({
       valorTotal: parsedCharge.valorTotal,
       valorCobrado: parsedCharge.valorCobrado,
       percentual: parsedCharge.percentual,
+      data: parsedCharge.data || dateUtils.todayIso(),
       tagOrigem,
       nomeOrigem: session.name || getUserName(originProfile, tagOrigem),
       phoneOrigem: session.phone || getUserPhone(originProfile),
@@ -801,7 +837,9 @@ function createChargeService({
     let registeredExpense = false;
 
     try {
-      const linkedExpense = await prepareLinkedExpenseUpdate(charge, 'pendente');
+      const linkedExpense = await prepareLinkedExpenseUpdate(charge, 'pendente', {
+        useChargeDate: true,
+      });
 
       Object.assign(charge, linkedExpense.chargeFields);
       await writeChargeCopies(charge, linkedExpense.extraPaths);

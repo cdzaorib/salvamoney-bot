@@ -2,7 +2,12 @@
 
 const { parseMoney } = require('../expense-parser');
 const { createTransactionStore, splitExpensesByPaymentStatus } = require('../services/transaction-store');
-const { categoriaFinal, detectarCategoria } = require('./categories');
+const {
+  categoriaFinal,
+  detectarCategoria,
+  normalizeCategoryName,
+  normalizeCustomCategories,
+} = require('./categories');
 const { MESES } = require('./date-utils');
 const { normalizeText } = require('./text-utils');
 
@@ -62,7 +67,7 @@ function deletedMessage(expense) {
       '🗑️ Apaguei somente esta parcela:',
       `*${expense.desc || 'Gasto'}* — ${formatMoney(expense.value)} (${expense.cat || 'Outros'})`,
       '',
-      'Para apagar todas as parcelas do parcelamento, essa função será implementada em uma próxima etapa.',
+      'Para apagar as parcelas restantes, envie: apagar parcelas [nome da compra].',
     ].join('\n');
   }
 
@@ -161,9 +166,107 @@ function installmentSelectionMessage(candidates) {
 
 function installmentConfirmationMessage(installment) {
   return [
-    `Tem certeza que deseja apagar todas as ${installment.parcelaTotal} parcelas de ${installment.desc}?`,
+    `Tem certeza que deseja apagar as parcelas restantes de ${installment.desc}?`,
+    'As parcelas com data anterior a hoje serão preservadas.',
     'Responda SIM para confirmar ou CANCELAR.',
   ].join('\n');
+}
+
+function customCategoryId(name) {
+  return normalizeText(name)
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 50);
+}
+
+function customCategoriesPath(group, user) {
+  return `grupos/${group}/usuarios/${user}/categorias`;
+}
+
+function customCategoryPath(group, user, id) {
+  return `${customCategoriesPath(group, user)}/${id}`;
+}
+
+function parseCustomCategoryCommand(text) {
+  const original = String(text || '').trim();
+  const normalized = normalizeText(original);
+
+  if (['categorias', 'minhas categorias', 'listar categorias', 'ver categorias'].includes(normalized)) {
+    return { action: 'list' };
+  }
+
+  let match = original.match(/^(?:adicionar|criar|nova|novo)\s+(?:nova\s+)?categoria\s+(.+)$/i) ||
+    original.match(/^categoria\s+nova\s+(.+)$/i);
+
+  if (match) {
+    const raw = String(match[1] || '').trim();
+    const [namePart, wordsPart = ''] = raw.split(/\s+(?:com|para|palavras?|keywords?)\s+/i);
+    const name = normalizeCategoryName(namePart);
+    const words = wordsPart
+      .split(/[,;]/)
+      .flatMap((part) => part.split(/\s+e\s+/i))
+      .map((word) => word.trim())
+      .filter(Boolean);
+
+    return {
+      action: 'add',
+      name,
+      words,
+    };
+  }
+
+  match = original.match(/^(?:apagar|excluir|remover)\s+categoria\s+(.+)$/i);
+
+  if (match) {
+    return {
+      action: 'remove',
+      name: normalizeCategoryName(match[1]),
+    };
+  }
+
+  return null;
+}
+
+function formatCategoryList(categories) {
+  const custom = normalizeCustomCategories(categories);
+
+  if (!custom.length) {
+    return [
+      'Você ainda não tem categorias personalizadas.',
+      '',
+      'Exemplo:',
+      'adicionar categoria Pets com ração, veterinário, petshop',
+    ].join('\n');
+  }
+
+  return [
+    'Suas categorias personalizadas:',
+    '',
+    ...custom.map((category, index) => {
+      const words = category.palavras
+        .filter((word) => normalizeText(word) !== normalizeText(category.nome))
+        .join(', ');
+
+      return `${index + 1}. ${category.nome}${words ? ` — ${words}` : ''}`;
+    }),
+  ].join('\n');
+}
+
+function compareExpenseDate(expense, today, currentMonthKey) {
+  const date = String(expense?.date || '').slice(0, 10);
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return date.localeCompare(today);
+  }
+
+  const [expenseYear, expenseMonth] = String(expense?.monthKey || '').split('_').map(Number);
+  const [currentYear, currentMonth] = String(currentMonthKey || '').split('_').map(Number);
+
+  if ([expenseYear, expenseMonth, currentYear, currentMonth].some((value) => !Number.isFinite(value))) {
+    return 0;
+  }
+
+  return (expenseYear * 12 + expenseMonth) - (currentYear * 12 + currentMonth);
 }
 
 function createExpenseService({
@@ -174,11 +277,63 @@ function createExpenseService({
   transactionStore: providedTransactionStore,
 }) {
   const { dateParts, monthKey, todayIso } = dateUtils;
+  const { get, ref, remove, set } = firebaseOps;
   const transactionStore = providedTransactionStore || createTransactionStore({
     db,
     firebaseOps,
     monthKey,
   });
+
+  async function getCategoriasPersonalizadas(session) {
+    const snap = await get(ref(db, customCategoriesPath(session.group, session.user)));
+
+    return normalizeCustomCategories(snap.val() || {});
+  }
+
+  async function processarCategoriaPersonalizada(session, text) {
+    const command = parseCustomCategoryCommand(text);
+
+    if (!command) {
+      return null;
+    }
+
+    if (command.action === 'list') {
+      return formatCategoryList(await getCategoriasPersonalizadas(session));
+    }
+
+    if (!command.name) {
+      return 'Informe o nome da categoria. Exemplo: adicionar categoria Pets com ração, veterinário, petshop';
+    }
+
+    const id = customCategoryId(command.name);
+
+    if (!id) {
+      return 'Informe um nome válido para a categoria.';
+    }
+
+    if (command.action === 'remove') {
+      await remove(ref(db, customCategoryPath(session.group, session.user, id)));
+
+      return `Categoria ${command.name} removida.`;
+    }
+
+    const category = {
+      nome: command.name,
+      palavras: normalizeCustomCategories([{
+        nome: command.name,
+        palavras: command.words,
+      }])[0]?.palavras || [normalizeText(command.name)],
+      createdAt: new Date().toISOString(),
+    };
+
+    await set(ref(db, customCategoryPath(session.group, session.user, id)), category);
+
+    return [
+      `Categoria ${command.name} adicionada ✅`,
+      '',
+      `Vou usar essa categoria quando aparecer: ${category.palavras.join(', ')}`,
+    ].join('\n');
+  }
 
   async function getGastosMesComIds(group, user, date) {
     return await transactionStore.listMonthlyExpensesWithIds({ date, group, user });
@@ -324,7 +479,8 @@ ${siteUrl}`;
       return 'Parcelas devem ser entre 2 e 60.';
     }
 
-    const category = detectarCategoria(desc);
+    const customCategories = await getCategoriasPersonalizadas(session);
+    const category = detectarCategoria(desc, customCategories);
     const installmentValue = Math.round((valor / parcelas) * 100) / 100;
     const parcelaId = String(Date.now());
     const today = new Date();
@@ -372,7 +528,8 @@ ${siteUrl}`;
       return 'Qual foi o valor? 💸';
     }
 
-    const category = categoriaFinal(description, expense.cat);
+    const customCategories = await getCategoriasPersonalizadas(session);
+    const category = categoriaFinal(description, expense.cat, customCategories);
 
     await transactionStore.saveExpense({
       group: session.group,
@@ -533,10 +690,22 @@ Se foi errado: _apagar último_`;
       phone: session.phone,
       parcelaId: installment.parcelaId,
       removePhoneCopy: true,
+      shouldRemoveExpense: (expense) => compareExpenseDate(expense, todayIso(), monthKey()) >= 0,
     });
 
-    return `🗑️ Apaguei ${removed.length} parcelas do parcelamento:
-*${installment.desc || 'Gasto parcelado'}*`;
+    if (!removed.length) {
+      return [
+        'Não encontrei parcelas restantes para apagar.',
+        `As parcelas anteriores de *${installment.desc || 'Gasto parcelado'}* foram preservadas.`,
+      ].join('\n');
+    }
+
+    return [
+      `🗑️ Apaguei ${removed.length} parcela(s) restante(s) do parcelamento:`,
+      `*${installment.desc || 'Gasto parcelado'}*`,
+      '',
+      'As parcelas anteriores foram preservadas.',
+    ].join('\n');
   }
 
   return {
@@ -547,10 +716,12 @@ Se foi errado: _apagar último_`;
     buscarParcelamentosParaApagar,
     installmentConfirmationMessage,
     getGastosMesComIds,
+    getCategoriasPersonalizadas,
     getResumoTexto,
     montarListaGastos,
     montarResumoFormatado,
     montarResumoHoje,
+    processarCategoriaPersonalizada,
     registrarGasto,
     registrarParcelamento,
   };

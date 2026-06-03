@@ -214,8 +214,10 @@ function createTransactionStore({
     phone,
     parcelaId,
     removePhoneCopy = true,
+    shouldRemoveExpense,
   }) {
-    const expenses = await listExpensesByParcelaId({ group, user, parcelaId });
+    const expenses = (await listExpensesByParcelaId({ group, user, parcelaId }))
+      .filter((expense) => typeof shouldRemoveExpense === 'function' ? shouldRemoveExpense(expense) : true);
 
     for (const expense of expenses) {
       await removeExpenseById({

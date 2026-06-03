@@ -22,8 +22,8 @@ function parseMoney(raw) {
 function parsearGasto(texto) {
   const t = String(texto || '')
     .trim()
-    .replace(/^gastei\s*/i, '')
-    .replace(/\breais?\b/gi, '')
+    .replace(/^(gastei|gasto|paguei|comprei|lancei|registrar|registre)\s*/i, '')
+    .replace(/\b(reais?|conto|contos)\b/gi, '')
     .replace(/\s+/g, ' ')
     .trim();
 

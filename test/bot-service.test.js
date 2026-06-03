@@ -1474,6 +1474,29 @@ test('normal text expense still works when signup is not active', async () => {
   }]);
 });
 
+test('user can add a custom category and use it in future expenses', async () => {
+  const { firebase, service } = createService({
+    seed: expenseSeed(),
+    session: { group: 'SALVAMONEY', user: '482913' },
+  });
+
+  const categoria = await service.processarMensagem(
+    '5511999999999',
+    'adicionar categoria Pets com ração, veterinário, petshop'
+  );
+  const resposta = await service.processarMensagem('5511999999999', 'paguei ração 80');
+
+  assert.match(categoria, /Categoria Pets adicionada/);
+  assert.deepEqual(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/categorias/pets'), {
+    nome: 'Pets',
+    palavras: ['pets', 'racao', 'veterinario', 'petshop'],
+    createdAt: firebase.getValue('grupos/SALVAMONEY/usuarios/482913/categorias/pets/createdAt'),
+  });
+  assert.match(resposta, /registrado/);
+  assert.equal(firebase.pushes[0].value.desc, 'ração');
+  assert.equal(firebase.pushes[0].value.cat, 'Pets');
+});
+
 test('recebo 3000 por mes saves monthly income in the financial profile', async () => {
   const { firebase, service } = createService({
     seed: expenseSeed(),
@@ -3705,12 +3728,14 @@ test('creates a direct charge and notifies the destination phone', async () => {
   assert.equal(resposta, [
     'Cobrança criada ✅',
     'Almoço — R$ 80,00 para Anna.',
+    `Data: ${todayIso().split('-').reverse().join('/')}.`,
   ].join('\n'));
   assert.equal(id, Object.keys(received)[0]);
   assert.equal(sent[id].id, id);
   assert.equal(sent[id].descricao, 'Almoço');
   assert.equal(sent[id].valorCobrado, 80);
   assert.equal(sent[id].valorTotal, 80);
+  assert.equal(sent[id].data, todayIso());
   assert.equal(sent[id].tagOrigem, '482913');
   assert.equal(sent[id].tagDestino, '123456');
   assert.equal(sent[id].nomeOrigem, 'Carlos');
@@ -3750,6 +3775,7 @@ test('creates a direct charge and notifies the destination phone', async () => {
       'Carlos te enviou uma cobrança:',
       'Almoço',
       'Valor: R$ 80,00',
+      `Data: ${todayIso().split('-').reverse().join('/')}`,
       '',
       'Responda:',
       'aceitar cobrança 1',
@@ -3768,6 +3794,30 @@ test('creates a direct charge and notifies the destination phone', async () => {
   ].sort());
   assert.equal(firebase.pushes.length, 0);
   assert.equal(firebase.removals.length, 0);
+});
+
+test('charge creation infers a loose charge name and keeps the informed date', async () => {
+  const date = todayIso();
+  const [year, month, day] = date.split('-');
+  const { firebase, service } = createService({
+    seed: chargeUsersSeed(),
+    session: { group: 'SALVAMONEY', user: '482913', tag: '482913' },
+  });
+  const resposta = await service.processarMensagem(
+    '5511999999999',
+    `cobrar 42 da tag 123456 baccio dia ${day}/${month}/${year}`
+  );
+  const sent = firebase.getValue('grupos/SALVAMONEY/usuarios/482913/cobrancasEnviadas');
+  const id = Object.keys(sent)[0];
+
+  assert.match(resposta, /Baccio — R\$ 42,00 para Anna\./);
+  assert.match(resposta, new RegExp(`Data: ${day}/${month}/${year}\\.`));
+  assert.equal(sent[id].descricao, 'Baccio');
+  assert.equal(sent[id].data, date);
+  assert.equal(
+    firebase.getValue(`grupos/SALVAMONEY/usuarios/123456/gastos/${currentMonthKey()}/cob_${id}`).date,
+    date
+  );
 });
 
 test('creates a percentage charge and registers the origin expense when the user spent money', async () => {
@@ -5116,7 +5166,7 @@ test('selected installment candidate deletes only that installment', async () =>
   const resposta = await service.processarMensagem('5511999999999', '1');
 
   assert.match(resposta, /Apaguei somente esta parcela/);
-  assert.match(resposta, /próxima etapa|proxima etapa/);
+  assert.match(resposta, /apagar parcelas/);
   assert.deepEqual(getSession(), {
     group: 'SALVAMONEY',
     user: '482913',
@@ -5181,7 +5231,7 @@ test('apagar parcelas da tv lists installment candidates without deleting immedi
   });
 });
 
-test('installment selection asks for final confirmation before deleting all installments', async () => {
+test('installment selection asks for final confirmation before deleting remaining installments', async () => {
   const installment = {
     parcelaId: 'tv-123',
     desc: 'TV',
@@ -5204,7 +5254,8 @@ test('installment selection asks for final confirmation before deleting all inst
   const resposta = await service.processarMensagem('5511999999999', '1');
 
   assert.equal(resposta, [
-    'Tem certeza que deseja apagar todas as 3 parcelas de TV?',
+    'Tem certeza que deseja apagar as parcelas restantes de TV?',
+    'As parcelas com data anterior a hoje serão preservadas.',
     'Responda SIM para confirmar ou CANCELAR.',
   ].join('\n'));
   assert.deepEqual(firebase.removals, []);
@@ -5239,7 +5290,7 @@ test('installment final confirmation removes only expenses with the selected par
   });
   const resposta = await service.processarMensagem('5511999999999', 'sim');
 
-  assert.match(resposta, /Apaguei 3 parcelas do parcelamento/);
+  assert.match(resposta, /Apaguei 3 parcela\(s\) restante\(s\) do parcelamento/);
   assert.match(resposta, /TV/);
   assert.deepEqual(getSession(), {
     group: 'SALVAMONEY',
@@ -5260,6 +5311,99 @@ test('installment final confirmation removes only expenses with the selected par
   assert.equal(firebase.getValue(`grupos/SALVAMONEY/usuarios/482913/gastos/${monthKeyOffset(1)}/tv_sala_2`).parcelaId, 'tv-456');
   assert.equal(firebase.getValue(`grupos/SALVAMONEY/usuarios/482913/gastos/${monthKeyOffset(0)}/tv_normal`).desc, 'TV');
   assert.equal(firebase.getValue(`grupos/SALVAMONEY/usuarios/482913/gastos/${monthKeyOffset(1)}/notebook_1`).parcelaId, 'note-999');
+});
+
+test('installment final confirmation preserves installments dated before today', async () => {
+  const { firebase, service } = createStatefulService({
+    initialSession: {
+      group: 'SALVAMONEY',
+      user: '482913',
+      pendingDelete: {
+        type: 'installment_confirmation',
+        installment: {
+          parcelaId: 'tv-123',
+          desc: 'TV',
+          cat: 'Lazer',
+          parcelaTotal: 3,
+          parcelasEncontradas: 3,
+          total: 1200,
+        },
+      },
+    },
+    seed: {
+      grupos: {
+        SALVAMONEY: {
+          usuarios: {
+            482913: {
+              gastos: {
+                [monthKeyOffset(-1)]: {
+                  tv_1: {
+                    desc: 'TV (1/3x)',
+                    date: isoMonthOffset(-1),
+                    parcelaId: 'tv-123',
+                    parcelaNum: 1,
+                    parcelaTotal: 3,
+                    value: 400,
+                  },
+                },
+                [monthKeyOffset(0)]: {
+                  tv_2: {
+                    desc: 'TV (2/3x)',
+                    date: todayIso(),
+                    parcelaId: 'tv-123',
+                    parcelaNum: 2,
+                    parcelaTotal: 3,
+                    value: 400,
+                  },
+                },
+                [monthKeyOffset(1)]: {
+                  tv_3: {
+                    desc: 'TV (3/3x)',
+                    parcelaId: 'tv-123',
+                    parcelaNum: 3,
+                    parcelaTotal: 3,
+                    value: 400,
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      transactionsByUser: {
+        5511999999999: {
+          [monthKeyOffset(-1)]: {
+            tv_1: {
+              desc: 'TV (1/3x)',
+              parcelaId: 'tv-123',
+              value: 400,
+            },
+          },
+          [monthKeyOffset(0)]: {
+            tv_2: {
+              desc: 'TV (2/3x)',
+              parcelaId: 'tv-123',
+              value: 400,
+            },
+          },
+          [monthKeyOffset(1)]: {
+            tv_3: {
+              desc: 'TV (3/3x)',
+              parcelaId: 'tv-123',
+              value: 400,
+            },
+          },
+        },
+      },
+    },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'sim');
+
+  assert.match(resposta, /Apaguei 2 parcela\(s\) restante\(s\)/);
+  assert.equal(firebase.getValue(`grupos/SALVAMONEY/usuarios/482913/gastos/${monthKeyOffset(-1)}/tv_1`).parcelaId, 'tv-123');
+  assert.equal(firebase.getValue(`transactionsByUser/5511999999999/${monthKeyOffset(-1)}/tv_1`).parcelaId, 'tv-123');
+  assert.equal(firebase.getValue(`grupos/SALVAMONEY/usuarios/482913/gastos/${monthKeyOffset(0)}/tv_2`), undefined);
+  assert.equal(firebase.getValue(`grupos/SALVAMONEY/usuarios/482913/gastos/${monthKeyOffset(1)}/tv_3`), undefined);
 });
 
 test('installment final confirmation cancellation keeps all installments', async () => {

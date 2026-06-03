@@ -1,5 +1,7 @@
 'use strict';
 
+const { validCategories } = require('./categories');
+
 function createAiMediaService({
   aiProviderRouter,
   expenseService,
@@ -9,6 +11,7 @@ function createAiMediaService({
 }) {
   const {
     apagarGastoPorTexto,
+    getCategoriasPersonalizadas,
     getResumoTexto,
     montarResumoFormatado,
     registrarGasto,
@@ -24,6 +27,17 @@ function createAiMediaService({
   async function processarComIA(texto, sessao) {
     const resumo = await getResumoTexto(sessao.group, sessao.user);
     const hoje = todayIso();
+    const customCategories = typeof getCategoriasPersonalizadas === 'function'
+      ? await getCategoriasPersonalizadas(sessao)
+      : [];
+    const categories = validCategories(customCategories).join(', ');
+    const customRules = customCategories.length
+      ? [
+        '',
+        'CATEGORIAS PERSONALIZADAS DO USUÁRIO:',
+        ...customCategories.map((category) => `- ${category.nome}: ${category.palavras.join(', ')}`),
+      ].join('\n')
+      : '';
 
     const system = `Você é o assistente financeiro do SalvaMoney, app de controle de gastos brasileiro.
 WhatsApp: direto, amigável, português brasileiro informal. Emojis com moderação.
@@ -32,7 +46,7 @@ HOJE: ${hoje}
 RESUMO DO MÊS: ${resumo}
 
 CATEGORIAS PERMITIDAS:
-Alimentação, Moradia, Transporte, Saúde, Lazer, Educação, Roupas, Academia, Outros.
+${categories}.
 
 REGRAS DE CATEGORIA:
 - almoço, almocei, jantar, mercado, supermercado, ifood, padaria, lanche, restaurante, pizza, comida → Alimentação
@@ -43,6 +57,7 @@ REGRAS DE CATEGORIA:
 - academia, musculação, gym, pilates → Academia
 - curso, faculdade, escola, livro, aula → Educação
 - roupa, camisa, calça, tênis, sapato → Roupas
+${customRules}
 
 RESPONDA APENAS JSON para ações, ou texto livre para conversa/dúvidas:
 • Registrar:  {"acao":"registrar","desc":"...","valor":0.00,"cat":"...","data":"${hoje}"}
