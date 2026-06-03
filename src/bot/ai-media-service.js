@@ -65,9 +65,11 @@ function createAiMediaService({
             `Categorias permitidas: ${categories.join(', ')}.`,
             '',
             'Categorias padrão e palavras típicas:',
-            '- Alimentação: salgado, doce, pão de queijo, padaria, lanche, pizza, hambúrguer, iFood, restaurante, mercado, açaí, sorvete, chocolate, marmita, comida, Baccio',
+            '- Alimentação: comidas, doces, salgados, lanches, mercado, padaria, restaurante, iFood, açaí, bebidas, pão de queijo, pizza, hambúrguer, sorvete, chocolate, marmita, comida, Baccio',
             '- Transporte: uber, 99, ônibus, passagem, gasolina, combustível, estacionamento, pedágio, táxi',
             '- Saúde: farmácia, remédio, médico, consulta, dentista, exame, hospital',
+            '- Roupas: roupa, camisa, camiseta, calça, tênis, sapato, vestido, blusa',
+            '- Academia: academia, musculação, gym, pilates, crossfit',
             '',
             'Categorias personalizadas:',
             customRules,
@@ -79,7 +81,11 @@ function createAiMediaService({
             '"paguei salgado 12" -> {"categoria":"Alimentação","confidence":0.95}',
             '"pão de queijo 6" -> {"categoria":"Alimentação","confidence":0.95}',
             '"uber 25" -> {"categoria":"Transporte","confidence":0.95}',
+            '"gasolina 100" -> {"categoria":"Transporte","confidence":0.95}',
             '"remédio 40" -> {"categoria":"Saúde","confidence":0.95}',
+            '"farmácia 80" -> {"categoria":"Saúde","confidence":0.95}',
+            '"comprei camiseta 60" -> {"categoria":"Roupas","confidence":0.95}',
+            '"academia 120" -> {"categoria":"Academia","confidence":0.95}',
             '"ração 80" e Pets personalizada -> {"categoria":"Pets","confidence":0.95}',
             '"coisa aleatória 17" -> {"categoria":"Outros","confidence":0.50}',
           ].join('\n'),
@@ -119,8 +125,9 @@ function createAiMediaService({
       ].join('\n')
       : '';
 
-    const system = `Você é o assistente financeiro do SalvaMoney, app de controle de gastos brasileiro.
-WhatsApp: direto, amigável, português brasileiro informal. Emojis com moderação.
+    const system = `Você é o interpretador financeiro do SalvaMoney.
+Sua tarefa é transformar mensagens de WhatsApp em JSON.
+WhatsApp: direto, amigável, português brasileiro informal. Emojis com moderação apenas em texto livre.
 
 HOJE: ${hoje}
 RESUMO DO MÊS: ${resumo}
@@ -129,14 +136,17 @@ CATEGORIAS PERMITIDAS:
 ${categories}.
 
 REGRAS DE CATEGORIA:
-- salgado, doce, pão de queijo, padaria, lanche, pizza, hambúrguer, iFood, restaurante, mercado, açaí, sorvete, chocolate, marmita, comida, Baccio → Alimentação
+- Nunca use "Outros" quando houver uma categoria claramente relacionada.
+- Categorias personalizadas do usuário têm prioridade quando fizerem sentido.
+- Comidas, doces, salgados, lanches, mercado, padaria, restaurante, iFood, açaí, bebidas, pão de queijo, pizza, hambúrguer, sorvete, chocolate, marmita, comida, Baccio → Alimentação
 - uber, 99, ônibus, passagem, gasolina, combustível, estacionamento, pedágio, táxi → Transporte
 - farmácia, remédio, médico, consulta, dentista, exame, hospital → Saúde
 - aluguel, luz, água, internet, condomínio, gás → Moradia
 - netflix, spotify, cinema, bar, show, festa, ingresso → Lazer
 - academia, musculação, gym, pilates → Academia
 - curso, faculdade, escola, livro, aula → Educação
-- roupa, camisa, calça, tênis, sapato → Roupas
+- roupa, camisa, camiseta, calça, tênis, sapato, vestido, blusa → Roupas
+- Só use "Outros" quando realmente não existir categoria adequada.
 ${customRules}
 
 RESPONDA APENAS JSON para ações, ou texto livre para conversa/dúvidas:
@@ -154,7 +164,11 @@ EXEMPLOS:
 "pão de queijo 6"          → {"acao":"registrar","desc":"pão de queijo","valor":6.00,"cat":"Alimentação","data":"${hoje}"}
 "baccio 32"                → {"acao":"registrar","desc":"Baccio","valor":32.00,"cat":"Alimentação","data":"${hoje}"}
 "uber 22 conto"            → {"acao":"registrar","desc":"uber","valor":22.00,"cat":"Transporte","data":"${hoje}"}
+"gasolina 100"             → {"acao":"registrar","desc":"gasolina","valor":100.00,"cat":"Transporte","data":"${hoje}"}
 "remédio 40"               → {"acao":"registrar","desc":"remédio","valor":40.00,"cat":"Saúde","data":"${hoje}"}
+"farmácia 80"              → {"acao":"registrar","desc":"farmácia","valor":80.00,"cat":"Saúde","data":"${hoje}"}
+"comprei camiseta 60"      → {"acao":"registrar","desc":"camiseta","valor":60.00,"cat":"Roupas","data":"${hoje}"}
+"academia 120"             → {"acao":"registrar","desc":"academia","valor":120.00,"cat":"Academia","data":"${hoje}"}
 "ração 80" com Pets criada → {"acao":"registrar","desc":"ração","valor":80.00,"cat":"Pets","data":"${hoje}"}
 "netflix 37"               → {"acao":"registrar","desc":"Netflix","valor":37.00,"cat":"Lazer","data":"${hoje}"}
 "apagar último"            → {"acao":"apagar","texto":"apagar último"}

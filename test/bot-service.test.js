@@ -1478,8 +1478,13 @@ test('normal text expense still works when signup is not active', async () => {
   ['paguei salgado 12', 'salgado', 'Alimentação'],
   ['doce 8', 'doce', 'Alimentação'],
   ['pão de queijo 6', 'pão de queijo', 'Alimentação'],
+  ['baccio 42', 'baccio', 'Alimentação'],
   ['uber 25', 'uber', 'Transporte'],
+  ['gasolina 100', 'gasolina', 'Transporte'],
   ['remédio 40', 'remédio', 'Saúde'],
+  ['farmácia 80', 'farmácia', 'Saúde'],
+  ['comprei camiseta 60', 'camiseta', 'Roupas'],
+  ['academia 120', 'academia', 'Academia'],
   ['coisa aleatória 17', 'coisa aleatória', 'Outros'],
 ].forEach(([message, desc, category]) => {
   test(`classifies "${message}" as ${category}`, async () => {
