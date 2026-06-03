@@ -302,6 +302,7 @@ function createBotService({
     apagarGastoPorTexto,
     apagarParcelamentoSelecionado,
     buscarParcelamentosParaApagar,
+    getCategoriasPersonalizadas,
     getGastosMesComIds,
     installmentConfirmationMessage,
     montarListaGastos,
@@ -402,6 +403,21 @@ function createBotService({
     safeLog,
     todayIso,
   });
+
+  async function classificarCategoriaDoGastoParseado(session, msg, desc) {
+    const customCategories = await getCategoriasPersonalizadas(session);
+    const localCategory = detectarCategoria(desc, customCategories);
+
+    if (localCategory !== 'Outros') {
+      return localCategory;
+    }
+
+    return await aiMediaService.classificarCategoriaComIA({
+      customCategories,
+      desc,
+      texto: msg,
+    }) || 'Outros';
+  }
 
   async function syncReceivedChargesBeforeSummary(session) {
     try {
@@ -1073,10 +1089,12 @@ ${SITE_URL}`;
     const gasto = parsearGasto(msg);
 
     if (gasto) {
+      const category = await classificarCategoriaDoGastoParseado(sessaoComPhone, msg, gasto.desc);
+
       return await registrarGastoComAlertas(sessaoComPhone, {
         desc: gasto.desc,
         valor: gasto.valor,
-        cat: detectarCategoria(gasto.desc),
+        cat: category,
         data: todayIso(),
       }, 'texto');
     }

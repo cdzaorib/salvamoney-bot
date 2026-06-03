@@ -1474,6 +1474,50 @@ test('normal text expense still works when signup is not active', async () => {
   }]);
 });
 
+[
+  ['paguei salgado 12', 'salgado', 'Alimentação'],
+  ['doce 8', 'doce', 'Alimentação'],
+  ['pão de queijo 6', 'pão de queijo', 'Alimentação'],
+  ['uber 25', 'uber', 'Transporte'],
+  ['remédio 40', 'remédio', 'Saúde'],
+  ['coisa aleatória 17', 'coisa aleatória', 'Outros'],
+].forEach(([message, desc, category]) => {
+  test(`classifies "${message}" as ${category}`, async () => {
+    const { firebase, service } = createService({
+      seed: expenseSeed(),
+      session: { group: 'SALVAMONEY', user: '482913' },
+    });
+    const resposta = await service.processarMensagem('5511999999999', message);
+
+    assert.match(resposta, /registrado/);
+    assert.equal(firebase.pushes.length, 1);
+    assert.equal(firebase.pushes[0].value.desc, desc);
+    assert.equal(firebase.pushes[0].value.cat, category);
+  });
+});
+
+test('AI category fallback classifies parsed expenses before using Outros', async () => {
+  const { firebase, service } = createService({
+    configOverrides: {
+      groqApiKey: 'fake-groq-key',
+    },
+    groqOverrides: {
+      chamarIA: async () => JSON.stringify({
+        categoria: 'Educação',
+        confidence: 0.9,
+      }),
+    },
+    seed: expenseSeed(),
+    session: { group: 'SALVAMONEY', user: '482913' },
+  });
+  const resposta = await service.processarMensagem('5511999999999', 'paguei mentoria tecnica 55');
+
+  assert.match(resposta, /registrado/);
+  assert.equal(firebase.pushes.length, 1);
+  assert.equal(firebase.pushes[0].value.desc, 'mentoria tecnica');
+  assert.equal(firebase.pushes[0].value.cat, 'Educação');
+});
+
 test('user can add a custom category and use it in future expenses', async () => {
   const { firebase, service } = createService({
     seed: expenseSeed(),
@@ -1484,7 +1528,7 @@ test('user can add a custom category and use it in future expenses', async () =>
     '5511999999999',
     'adicionar categoria Pets com ração, veterinário, petshop'
   );
-  const resposta = await service.processarMensagem('5511999999999', 'paguei ração 80');
+  const resposta = await service.processarMensagem('5511999999999', 'ração 80');
 
   assert.match(categoria, /Categoria Pets adicionada/);
   assert.deepEqual(firebase.getValue('grupos/SALVAMONEY/usuarios/482913/categorias/pets'), {

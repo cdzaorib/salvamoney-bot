@@ -1,6 +1,7 @@
 'use strict';
 
 const { validCategories } = require('./categories');
+const { normalizeText } = require('./text-utils');
 
 function createAiMediaService({
   aiProviderRouter,
@@ -22,6 +23,85 @@ function createAiMediaService({
 
   function errorDetails(err) {
     return err.response?.data || err.error || err.message;
+  }
+
+  function findAllowedCategory(category, customCategories = []) {
+    const normalized = normalizeText(category);
+
+    if (!normalized) {
+      return null;
+    }
+
+    return validCategories(customCategories)
+      .find((allowedCategory) => normalizeText(allowedCategory) === normalized) || null;
+  }
+
+  async function classificarCategoriaComIA({
+    customCategories = [],
+    desc,
+    texto,
+  } = {}) {
+    if (!aiProviderRouter?.generateJson) {
+      return null;
+    }
+
+    const categories = validCategories(customCategories);
+    const customRules = customCategories.length
+      ? customCategories.map((category) => `- ${category.nome}: ${category.palavras.join(', ')}`).join('\n')
+      : '- Nenhuma categoria personalizada cadastrada.';
+    const response = await aiProviderRouter.generateJson({
+      task: 'expense_category_classifier',
+      fallback: null,
+      messages: [
+        {
+          role: 'system',
+          content: [
+            'Você classifica a categoria de um gasto do SalvaMoney.',
+            'Responda somente JSON válido, sem markdown.',
+            'Use somente uma categoria permitida.',
+            'Categorias personalizadas do usuário têm prioridade quando fizerem sentido.',
+            'Use "Outros" apenas quando nenhuma categoria padrão ou personalizada fizer sentido.',
+            '',
+            `Categorias permitidas: ${categories.join(', ')}.`,
+            '',
+            'Categorias padrão e palavras típicas:',
+            '- Alimentação: salgado, doce, pão de queijo, padaria, lanche, pizza, hambúrguer, iFood, restaurante, mercado, açaí, sorvete, chocolate, marmita, comida, Baccio',
+            '- Transporte: uber, 99, ônibus, passagem, gasolina, combustível, estacionamento, pedágio, táxi',
+            '- Saúde: farmácia, remédio, médico, consulta, dentista, exame, hospital',
+            '',
+            'Categorias personalizadas:',
+            customRules,
+            '',
+            'Formato obrigatório:',
+            '{"categoria":"Alimentação","confidence":0.92}',
+            '',
+            'Exemplos:',
+            '"paguei salgado 12" -> {"categoria":"Alimentação","confidence":0.95}',
+            '"pão de queijo 6" -> {"categoria":"Alimentação","confidence":0.95}',
+            '"uber 25" -> {"categoria":"Transporte","confidence":0.95}',
+            '"remédio 40" -> {"categoria":"Saúde","confidence":0.95}',
+            '"ração 80" e Pets personalizada -> {"categoria":"Pets","confidence":0.95}',
+            '"coisa aleatória 17" -> {"categoria":"Outros","confidence":0.50}',
+          ].join('\n'),
+        },
+        {
+          role: 'user',
+          content: [
+            `Descrição: ${String(desc || '').trim()}`,
+            `Mensagem original: ${String(texto || '').trim()}`,
+          ].join('\n'),
+        },
+      ],
+    });
+
+    const category = findAllowedCategory(response?.categoria || response?.category, customCategories);
+    const confidence = Number(response?.confidence ?? response?.confianca ?? 1);
+
+    if (!category || category === 'Outros' || !Number.isFinite(confidence) || confidence < 0.6) {
+      return null;
+    }
+
+    return category;
   }
 
   async function processarComIA(texto, sessao) {
@@ -49,9 +129,9 @@ CATEGORIAS PERMITIDAS:
 ${categories}.
 
 REGRAS DE CATEGORIA:
-- almoço, almocei, jantar, mercado, supermercado, ifood, padaria, lanche, restaurante, pizza, comida → Alimentação
-- uber, 99, gasolina, posto, ônibus, passagem, estacionamento, táxi → Transporte
-- farmácia, remédio, médico, consulta, exame, dentista → Saúde
+- salgado, doce, pão de queijo, padaria, lanche, pizza, hambúrguer, iFood, restaurante, mercado, açaí, sorvete, chocolate, marmita, comida, Baccio → Alimentação
+- uber, 99, ônibus, passagem, gasolina, combustível, estacionamento, pedágio, táxi → Transporte
+- farmácia, remédio, médico, consulta, dentista, exame, hospital → Saúde
 - aluguel, luz, água, internet, condomínio, gás → Moradia
 - netflix, spotify, cinema, bar, show, festa, ingresso → Lazer
 - academia, musculação, gym, pilates → Academia
@@ -69,7 +149,13 @@ EXEMPLOS:
 "almocei, gastei 30"       → {"acao":"registrar","desc":"almoço","valor":30.00,"cat":"Alimentação","data":"${hoje}"}
 "almoço 35"                → {"acao":"registrar","desc":"almoço","valor":35.00,"cat":"Alimentação","data":"${hoje}"}
 "paguei 150 no mercado"    → {"acao":"registrar","desc":"mercado","valor":150.00,"cat":"Alimentação","data":"${hoje}"}
+"paguei salgado 12"        → {"acao":"registrar","desc":"salgado","valor":12.00,"cat":"Alimentação","data":"${hoje}"}
+"doce 8"                   → {"acao":"registrar","desc":"doce","valor":8.00,"cat":"Alimentação","data":"${hoje}"}
+"pão de queijo 6"          → {"acao":"registrar","desc":"pão de queijo","valor":6.00,"cat":"Alimentação","data":"${hoje}"}
+"baccio 32"                → {"acao":"registrar","desc":"Baccio","valor":32.00,"cat":"Alimentação","data":"${hoje}"}
 "uber 22 conto"            → {"acao":"registrar","desc":"uber","valor":22.00,"cat":"Transporte","data":"${hoje}"}
+"remédio 40"               → {"acao":"registrar","desc":"remédio","valor":40.00,"cat":"Saúde","data":"${hoje}"}
+"ração 80" com Pets criada → {"acao":"registrar","desc":"ração","valor":80.00,"cat":"Pets","data":"${hoje}"}
 "netflix 37"               → {"acao":"registrar","desc":"Netflix","valor":37.00,"cat":"Lazer","data":"${hoje}"}
 "apagar último"            → {"acao":"apagar","texto":"apagar último"}
 "lancei errado 50"         → {"acao":"apagar","texto":"lancei errado 50"}
@@ -201,6 +287,7 @@ Nunca invente valores. Se não informou valor ao registrar, pergunte.`;
   }
 
   return {
+    classificarCategoriaComIA,
     processarAudio,
     processarImagemComFallback,
     processarTextoComIA,
