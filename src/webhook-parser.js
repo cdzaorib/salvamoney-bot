@@ -1,12 +1,38 @@
 'use strict';
 
 function createWebhookParser() {
-  function isSupportedMessageEvent(body) {
-    // A Evolution pode enviar o evento como:
-    // messages.upsert, MESSAGES_UPSERT, messages_upsert ou messages-upsert.
-    const eventName = String(body?.event || '').toLowerCase();
 
-    return !eventName || ['messages.upsert', 'messages_upsert', 'messages-upsert'].includes(eventName);
+  function normalizeEvent(body) {
+    const raw = String(body?.event || '').toLowerCase();
+
+    if (!raw) return 'messages.upsert';
+
+    const map = {
+      'messages_upsert': 'messages.upsert',
+      'messages-upsert': 'messages.upsert',
+      'messages.upsert': 'messages.upsert',
+      'message': 'messages.upsert',
+      'messages': 'messages.upsert',
+
+      'chats.upsert': 'chats.upsert',
+      'chat.upsert': 'chats.upsert',
+      'chats': 'chats.upsert',
+    };
+
+    return map[raw] || raw;
+  }
+
+  function isSupportedMessageEvent(body) {
+    const event = normalizeEvent(body);
+
+    return [
+      'messages.upsert',
+      'chats.upsert',
+    ].includes(event);
+  }
+
+  function getEvent(body) {
+    return normalizeEvent(body);
   }
 
   function getEvolutionMsg(body) {
@@ -51,10 +77,6 @@ function createWebhookParser() {
     const key = data?.key || body?.key || {};
     const candidates = getPhoneCandidatesFromWebhook(body);
 
-    // Evolution API:
-    // Em mensagem direta recebida, key.remoteJid costuma ser o número de quem enviou.
-    // Alguns payloads também trazem body.sender/body.phone como o número da instância,
-    // então NÃO devemos priorizar esses campos no Evolution.
     if (String(key?.remoteJid || '').includes('@g.us')) {
       return candidates.keyParticipant || candidates.dataSender || candidates.bodySender || '';
     }
@@ -74,12 +96,9 @@ function createWebhookParser() {
   }
 
   function isGroupWebhook(body) {
-    if (body?.isGroup) {
-      return true;
-    }
+    if (body?.isGroup) return true;
 
     const jid = (body?.data || body)?.key?.remoteJid || (body?.data || body)?.remoteJid || '';
-
     return String(jid).includes('@g.us');
   }
 
@@ -115,9 +134,6 @@ function createWebhookParser() {
       imageMsg?.base64 ||
       imageMsg?.mediaBase64 ||
       imageMsg?.media ||
-      data?.message?.base64 ||
-      data?.message?.mediaBase64 ||
-      data?.message?.media ||
       null;
 
     const mediaUrl =
@@ -168,6 +184,8 @@ function createWebhookParser() {
   }
 
   return {
+    normalizeEvent,
+    getEvent,
     getMediaInfo,
     getMessageId,
     getPhoneCandidatesFromWebhook,
