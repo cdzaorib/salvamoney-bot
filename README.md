@@ -1,6 +1,6 @@
 # 💰 SalvaMoney Bot — WhatsApp
 
-Bot que registra gastos via WhatsApp e salva direto no Firebase.
+Bot que registra gastos via WhatsApp e salva direto no Firebase .
 
 ## Recursos
 
