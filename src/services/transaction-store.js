@@ -1,5 +1,6 @@
 'use strict';
 
+const { errorSummary } = require('../error-summary');
 const { getFirebaseOps } = require('../firebase-db');
 
 function isCountableExpense(item) {
@@ -101,7 +102,17 @@ function createTransactionStore({
   async function listExpenseMonths({ group, user }) {
     const snap = await get(ref(db, `grupos/${group}/usuarios/${user}/gastos`));
 
-    return Object.keys(snap.val() || {}).sort();
+    // Ordem cronológica: "2026_10" vem depois de "2026_9" (não ordem de texto).
+    return Object.keys(snap.val() || {}).sort((a, b) => {
+      const [yearA, monthA] = a.split('_').map(Number);
+      const [yearB, monthB] = b.split('_').map(Number);
+
+      if ([yearA, monthA, yearB, monthB].some((value) => !Number.isFinite(value))) {
+        return a.localeCompare(b);
+      }
+
+      return (yearA * 12 + monthA) - (yearB * 12 + monthB);
+    });
   }
 
   async function listAllExpensesWithIds({ group, user }) {
@@ -167,7 +178,7 @@ function createTransactionStore({
         user,
       });
     } catch (err) {
-      console.error('Erro ao salvar cópia da transação por telefone:', err.response?.data || err.message || err);
+      console.error('Erro ao salvar cópia da transação por telefone:', errorSummary(err));
     }
 
     return legacyResult;

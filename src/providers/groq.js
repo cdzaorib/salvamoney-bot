@@ -11,7 +11,10 @@ const Groq = require('groq-sdk');
 
 function createGroqClient(config) {
   const client = config.groqApiKey
-    ? new Groq({ apiKey: config.groqApiKey })
+    ? new Groq({
+      apiKey: config.groqApiKey,
+      maxRetries: Number.isInteger(config.groqMaxRetries) ? config.groqMaxRetries : 1,
+    })
     : null;
 
   function limparBase64(v = '') {
@@ -23,7 +26,7 @@ function createGroqClient(config) {
 
     const r = await axios.get(mediaUrl, {
       responseType: 'arraybuffer',
-      timeout: 60000,
+      timeout: config.mediaDownloadTimeoutMs || 60000,
       maxContentLength: Infinity,
       maxBodyLength: Infinity,
     });
@@ -44,7 +47,8 @@ function createGroqClient(config) {
         max_tokens: 500,
       },
       {
-        timeout: 30000,
+        maxRetries: 0,
+        timeout: config.aiLegacyTimeoutMs || 30000,
       }
     );
 
@@ -72,7 +76,7 @@ function createGroqClient(config) {
         response_format: 'json',
       },
       {
-        timeout: 60000,
+        timeout: config.groqAudioTimeoutMs || 60000,
       }
     );
 
@@ -137,17 +141,55 @@ Nunca invente valor.`,
         max_tokens: 400,
       },
       {
-        timeout: 60000,
+        timeout: config.groqVisionTimeoutMs || 60000,
       }
     );
 
     return r.choices?.[0]?.message?.content?.trim() || '';
   }
 
+  // Fallback textual (GPT-OSS). A repetição fica a cargo do gateway de IA.
+  async function chatCompletion({
+    json = false,
+    maxTokens = 600,
+    messages,
+    model = config.groqFallbackModel,
+    temperature = 0.2,
+    timeoutMs = config.groqFallbackTimeoutMs || 2500,
+  }) {
+    if (!config.groqApiKey) {
+      throw new Error('not_configured');
+    }
+
+    const r = await client.chat.completions.create(
+      {
+        model,
+        messages,
+        temperature,
+        max_tokens: maxTokens,
+        ...(json ? { response_format: { type: 'json_object' } } : {}),
+        ...(String(model || '').startsWith('openai/gpt-oss') ? { reasoning_effort: 'low' } : {}),
+      },
+      {
+        maxRetries: 0,
+        timeout: timeoutMs,
+      }
+    );
+
+    return {
+      text: r.choices?.[0]?.message?.content?.trim() || '',
+      usage: {
+        inputTokens: Number(r.usage?.prompt_tokens || 0),
+        outputTokens: Number(r.usage?.completion_tokens || 0),
+      },
+    };
+  }
+
   return {
     analisarImagem,
     baixarMediaComoBase64,
     chamarIA,
+    chatCompletion,
     transcreverAudio,
   };
 }

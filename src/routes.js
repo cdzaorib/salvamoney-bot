@@ -1,5 +1,6 @@
 'use strict';
 
+const { errorSummary } = require('./error-summary');
 const { dashboardPage } = require('./dashboard-page');
 const { dashboardAuthorized, webhookAuthorized } = require('./security');
 
@@ -97,7 +98,7 @@ function registerRoutes({
 
       console.log(`📩 [${maskPhone(phone)}] ${texto ? logText(texto) : `[${mediaInfo.type}]`}`);
 
-      const resposta = await botService.processarMensagem(phone, texto, mediaInfo);
+      const resposta = await botService.processarMensagem(phone, texto, mediaInfo, { messageId });
 
       console.log('🤖 Resposta gerada:', resposta ? logText(resposta, 500) : 'SEM RESPOSTA');
 
@@ -109,7 +110,7 @@ function registerRoutes({
         console.log('⚠️ Não enviou porque resposta veio vazia.');
       }
     } catch (err) {
-      console.error('Erro no webhook:', err.response?.data || err.message || err);
+      console.error('Erro no webhook:', errorSummary(err));
     }
   });
 
@@ -177,7 +178,7 @@ function registerRoutes({
           })),
       });
     } catch (err) {
-      console.error('Erro dashboard API:', err);
+      console.error('Erro dashboard API:', errorSummary(err));
 
       return res.status(500).json({
         ok: false,
@@ -222,7 +223,7 @@ function registerRoutes({
 
       return res.json({ ok: true });
     } catch (err) {
-      console.error('Erro ao apagar gasto via API:', err);
+      console.error('Erro ao apagar gasto via API:', errorSummary(err));
 
       return res.status(500).json({
         ok: false,
@@ -255,6 +256,7 @@ function registerRoutes({
       deleteViaApi: true,
       criarCodigo: true,
       siteLink: true,
+      ...Object.fromEntries(Object.entries(config.features || {}).map(([key, value]) => [key, Boolean(value)])),
     },
   }));
 

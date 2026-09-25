@@ -1,6 +1,13 @@
 'use strict';
 
+const { errorSummary } = require('./error-summary');
+const { createAiGateway } = require('./ai/ai-gateway');
 const { createAiProviderRouter } = require('./ai/ai-provider-router');
+const { createCircuitBreaker } = require('./ai/circuit-breaker');
+const { createConversationContext } = require('./ai/conversation-context');
+const { createCostTracker } = require('./ai/cost-tracker');
+const { createDeepseekClient } = require('./ai/deepseek-client');
+const { getContext, runWithContext } = require('./ai/request-context');
 const {
   isDeleteCommand,
   isHelpCommand,
@@ -12,6 +19,7 @@ const {
 const { createAccountService } = require('./bot/account-service');
 const { createAlertService } = require('./bot/alert-service');
 const { createAiMediaService } = require('./bot/ai-media-service');
+const { createAssistantService } = require('./bot/assistant-service');
 const { detectarCategoria } = require('./bot/categories');
 const { createChargeService } = require('./bot/charge-service');
 const { MESES, createDateUtils } = require('./bot/date-utils');
@@ -26,8 +34,10 @@ const { createSavingsGoalService } = require('./bot/savings-goal-service');
 const { normalizeText } = require('./bot/text-utils');
 const { createWeeklyPlannerService } = require('./bot/weekly-planner-service');
 const { createWeeklyReportPreferencesService } = require('./bot/weekly-report-preferences-service');
-const { createWeeklyReportService } = require('./bot/weekly-report-service');
+const { createWeeklyReportService, isWeeklyReportCommand } = require('./bot/weekly-report-service');
 const { parsearGasto, parsearParcelamento } = require('./expense-parser');
+const { createIdempotencyStore } = require('./services/idempotency-store');
+const { createTransactionStore } = require('./services/transaction-store');
 const {
   DEFAULT_GROUP,
   createUserService,
@@ -69,6 +79,8 @@ const MY_PROFILE_COMMANDS = new Set([
 ]);
 const FIND_TAG_COMMAND_PATTERN = /^(buscar|procurar|encontrar) tag(?: (.+))?$/;
 const TAG_ACCOUNT_REQUIRED_MESSAGE = 'Para usar o SalvaMoney, crie sua conta pelo WhatsApp usando: criar conta SeuNome ou entre com sua tag: entrar 123456.';
+const DUPLICATE_MESSAGE_REPLY = '✅ Essa mensagem já foi registrada antes. Nada foi duplicado.';
+const AI_DISABLED_MEDIA_MESSAGE = 'Você desativou a IA, e áudio/imagem precisam dela. Envie em texto (ex.: mercado 45,90) ou reative com: ativar IA';
 
 function defaultFirebaseOps() {
   const { getFirebaseOps } = require('./firebase-db');
@@ -271,20 +283,59 @@ function notFoundShareTagMessage() {
 }
 
 function createBotService({
+  aiGateway: providedAiGateway,
+  braveClient,
+  circuitBreaker: providedCircuitBreaker,
   config,
+  conversationContext: providedConversationContext,
+  costTracker: providedCostTracker,
   db,
   firebaseOps,
   groq,
+  idempotencyStore: providedIdempotencyStore,
   logger = console,
   notificationSender,
+  now = () => new Date(),
   safeLog,
   sessionStore,
   userService: providedUserService,
 }) {
   const SITE_URL = config.siteUrl;
   const TIME_ZONE = config.timeZone;
+  const features = config.features || {};
   const { getSession, saveSession } = sessionStore;
-  const { ref, get, push, set, update, remove } = firebaseOps || defaultFirebaseOps();
+  const { ref, get, push, set, update, remove, transaction } = firebaseOps || defaultFirebaseOps();
+  const circuitBreaker = providedCircuitBreaker || createCircuitBreaker({
+    cooldownMs: config.ai?.circuitCooldownMs,
+    failureThreshold: config.ai?.circuitFailureThreshold,
+  });
+  // O controle de custos existe sempre que há orçamento configurado (produção).
+  const costTracker = providedCostTracker !== undefined
+    ? providedCostTracker
+    : (config.budget && typeof transaction === 'function'
+      ? createCostTracker({ config, db, firebaseOps: { get, ref, transaction }, logger, notificationSender })
+      : null);
+  const aiGateway = providedAiGateway !== undefined
+    ? providedAiGateway
+    : (features.conversationalAi
+      ? createAiGateway({
+        circuitBreaker,
+        config,
+        costTracker,
+        deepseekClient: createDeepseekClient({ config }),
+        groqClient: groq,
+        logger,
+      })
+      : null);
+  const conversationContext = providedConversationContext || createConversationContext({
+    maxMessages: config.ai?.contextMaxMessages,
+    ttlMs: config.ai?.contextTtlMs,
+  });
+  const idempotencyStore = providedIdempotencyStore !== undefined
+    ? providedIdempotencyStore
+    : (typeof transaction === 'function'
+      ? createIdempotencyStore({ db, firebaseOps: { get, ref, transaction, update }, now, pepper: config.webhookToken || '' })
+      : null);
   const dateUtils = createDateUtils({
     monthIndexMode: config.monthIndexMode,
     timeZone: TIME_ZONE,
@@ -327,7 +378,10 @@ function createBotService({
     firebaseOps: { get, ref, update },
   });
   const aiProviderRouter = createAiProviderRouter({
+    aiGateway,
+    circuitBreaker,
     config,
+    costTracker,
     groq,
   });
   const monthlySummaryService = createMonthlySummaryService({
@@ -403,6 +457,30 @@ function createBotService({
     safeLog,
     todayIso,
   });
+  const assistantService = createAssistantService({
+    aiGateway,
+    braveClient,
+    config,
+    conversationContext,
+    costTracker,
+    dateUtils,
+    db,
+    expenseService,
+    firebaseOps: { get, push, ref, remove, set, transaction, update },
+    idempotencyStore,
+    logger,
+    notificationSender,
+    now,
+    registrarGasto: registrarGastoComAlertas,
+    saveSession,
+    summaryHandler: (session) => monthlySummaryService.processarResumoMensal(session, 'resumo do mês'),
+    transactionStore: createTransactionStore({
+      db,
+      firebaseOps: { get, push, ref, remove, set },
+      monthKey: dateUtils.monthKey,
+    }),
+    weeklyReportService,
+  });
 
   async function classificarCategoriaDoGastoParseado(session, msg, desc) {
     const customCategories = await getCategoriasPersonalizadas(session);
@@ -423,7 +501,7 @@ function createBotService({
     try {
       await chargeService.syncReceivedCharges(session, { onlyIfChanged: true });
     } catch (err) {
-      console.error('Erro ao sincronizar cobranças antes do resumo:', err.response?.data || err.message || err);
+      console.error('Erro ao sincronizar cobranças antes do resumo:', errorSummary(err));
     }
   }
 
@@ -434,31 +512,70 @@ function createBotService({
   async function appendAlertMessages(response, session) {
     try {
       const alertMessages = await alertService.verificarAlertas(session);
+      const framedAlerts = [];
 
-      return alertMessages.length
-        ? [response, ...alertMessages].join('\n\n')
+      for (const alertMessage of alertMessages) {
+        framedAlerts.push(await assistantService.frameAlert(session, alertMessage));
+      }
+
+      return framedAlerts.length
+        ? [response, ...framedAlerts].join('\n\n')
         : response;
     } catch (err) {
-      console.error('Erro ao verificar alertas financeiros:', err.response?.data || err.message || err);
+      console.error('Erro ao verificar alertas financeiros:', errorSummary(err));
 
       return response;
     }
   }
 
-  async function registrarGastoComAlertas(session, expense, source = 'texto') {
-    const response = await registrarGasto(session, expense, source);
+  async function appendPersonalityComment(response, session) {
+    try {
+      const comment = await assistantService.expenseComment(session);
 
-    return shouldCheckAlerts(response)
-      ? await appendAlertMessages(response, session)
-      : response;
+      return comment ? `${response}\n\n${comment}` : response;
+    } catch (_) {
+      return response;
+    }
+  }
+
+  // Chave idempotente por mensagem do WhatsApp: um retry do webhook (mesmo após
+  // reinício do processo) não duplica o gasto.
+  async function withMessageIdempotency(session, tipo, execute) {
+    const messageId = getContext()?.messageId;
+    const tag = normalizeAccessTag(session?.tag || session?.user);
+
+    if (!idempotencyStore || !messageId || !tag) {
+      return await execute();
+    }
+
+    const { duplicate, result } = await idempotencyStore.run({
+      execute,
+      key: `msg:${messageId}:${tipo}`,
+      scope: tag,
+      tipo,
+    });
+
+    return duplicate ? DUPLICATE_MESSAGE_REPLY : result;
+  }
+
+  async function registrarGastoComAlertas(session, expense, source = 'texto') {
+    return await withMessageIdempotency(session, 'gasto', async () => {
+      const response = await registrarGasto(session, expense, source);
+
+      return shouldCheckAlerts(response)
+        ? await appendPersonalityComment(await appendAlertMessages(response, session), session)
+        : response;
+    });
   }
 
   async function registrarParcelamentoComAlertas(session, installment) {
-    const response = await registrarParcelamento(session, installment);
+    return await withMessageIdempotency(session, 'parcelamento', async () => {
+      const response = await registrarParcelamento(session, installment);
 
-    return shouldCheckAlerts(response)
-      ? await appendAlertMessages(response, session)
-      : response;
+      return shouldCheckAlerts(response)
+        ? await appendAlertMessages(response, session)
+        : response;
+    });
   }
 
   async function processarIntencaoRoteada(session, msg) {
@@ -762,7 +879,28 @@ function createBotService({
   }
 
   // ─── MENSAGEM PRINCIPAL ───────────────────────────────────
-  async function processarMensagem(phone, texto, mediaInfo = null) {
+  async function processarMensagem(phone, texto, mediaInfo = null, options = {}) {
+    const sessaoAtual = await getSession(phone);
+    const context = await assistantService.requestContext(sessaoAtual, options);
+    const run = () => runWithContext(context, () => processarMensagemInterna(phone, texto, mediaInfo, options));
+
+    // Webhook repetido (mesmo após reinício) não reprocessa a mensagem.
+    if (!options.messageId || options.nested || !idempotencyStore) {
+      return await run();
+    }
+
+    const tag = normalizeAccessTag(sessaoAtual?.tag || sessaoAtual?.user);
+    const { duplicate, result } = await idempotencyStore.run({
+      execute: run,
+      key: `webhook:${options.messageId}`,
+      scope: tag || `phone:${String(phone || '').replace(/\D/g, '')}`,
+      tipo: 'mensagem',
+    });
+
+    return duplicate ? DUPLICATE_MESSAGE_REPLY : result;
+  }
+
+  async function processarMensagemInterna(phone, texto, mediaInfo = null, options = {}) {
     const msg = String(texto || '').trim();
     const msgMin = msg.toLowerCase();
     let sessao = await getSession(phone);
@@ -810,6 +948,7 @@ function createBotService({
         '- aceitar cobrança 1',
         '- recebi cobrança 1',
         '',
+        ...assistantService.helpLines(),
         'Site:',
         SITE_URL,
       ].join('\n');
@@ -929,6 +1068,12 @@ ${SITE_URL}`;
 
     const sessaoComPhone = sessionWithPhone(sessao, phone);
 
+    const respostaAssistente = await assistantService.process(phone, sessaoComPhone, msg);
+
+    if (respostaAssistente) {
+      return respostaAssistente;
+    }
+
     const respostaPreferenciaRelatorioSemanal =
       await weeklyReportPreferencesService.processarPreferenciaRelatorioSemanal(sessaoComPhone, msg);
 
@@ -988,7 +1133,9 @@ ${SITE_URL}`;
       return respostaPlanoSemanal;
     }
 
-    const respostaRelatorioSemanal = await weeklyReportService.processarRelatorioSemanal(sessaoComPhone, msg);
+    const respostaRelatorioSemanal = isWeeklyReportCommand(msg)
+      ? await assistantService.composeWeeklyReport(sessaoComPhone, msg)
+      : null;
 
     if (respostaRelatorioSemanal) {
       return respostaRelatorioSemanal;
@@ -1000,15 +1147,26 @@ ${SITE_URL}`;
       return respostaAdvisorFinanceiro;
     }
 
-    const respostaIntencaoRoteada = mediaInfo ? null : await processarIntencaoRoteada(sessaoComPhone, msg);
+    // Com a IA conversacional ativa, o interpretador novo substitui o roteador antigo.
+    const respostaIntencaoRoteada = mediaInfo || features.conversationalAi
+      ? null
+      : await processarIntencaoRoteada(sessaoComPhone, msg);
 
     if (respostaIntencaoRoteada) {
       return respostaIntencaoRoteada;
     }
 
+    if ((mediaInfo?.type === 'audio' || mediaInfo?.type === 'image') && getContext()?.aiDisabled === true) {
+      return AI_DISABLED_MEDIA_MESSAGE;
+    }
+
     // ── ÁUDIO ──
     if (mediaInfo?.type === 'audio') {
-      return await aiMediaService.processarAudio(phone, mediaInfo, processarMensagem);
+      return await aiMediaService.processarAudio(
+        phone,
+        mediaInfo,
+        (audioPhone, transcricao, audioMedia) => processarMensagem(audioPhone, transcricao, audioMedia, { ...options, nested: true })
+      );
     }
 
     // ── IMAGEM ──
@@ -1099,8 +1257,17 @@ ${SITE_URL}`;
       }, 'texto');
     }
 
+    // ── IA CONVERSACIONAL (DeepSeek com consentimento) ──
+    const respostaConversa = await assistantService.processFallback(phone, sessaoComPhone, msg);
+
+    if (respostaConversa) {
+      return respostaConversa;
+    }
+
     // ── IA ──
-    const respostaIA = await aiMediaService.processarTextoComIA(msg, sessaoComPhone);
+    const respostaIA = features.conversationalAi
+      ? undefined
+      : await aiMediaService.processarTextoComIA(msg, sessaoComPhone);
 
     if (respostaIA !== undefined) {
       return respostaIA;
@@ -1114,12 +1281,20 @@ _apagar último_
 Ou *ajuda* para ver os comandos.`;
   }
 
+  // Relatório automático: usa a personalidade e o consentimento de cada usuário.
+  async function gerarRelatorioSemanal(session, text = 'relatório da semana') {
+    const context = await assistantService.requestContext(session);
+
+    return await runWithContext(context, () => assistantService.composeWeeklyReport(session, text));
+  }
+
   return {
     MESES,
     apagarGastoPorId,
     dateParts,
-    gerarRelatorioSemanal: weeklyReportService.gerarRelatorioSemanal,
+    gerarRelatorioSemanal,
     getGastosMesComIds,
+    obligationService: assistantService.obligationService,
     processarMensagem,
   };
 }
