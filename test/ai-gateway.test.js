@@ -165,13 +165,81 @@ test('gateway: orçamento bloqueado impede chamadas externas', async () => {
   const deepseek = fakeProvider([{ text: 'x', usage: {} }]);
   const groq = fakeGroq([{ text: 'y', usage: {} }]);
   const costTracker = {
-    canSpend: async () => ({ allowed: false, reason: 'limite_mensal' }),
-    record: async () => 0,
+    reserve: async () => ({ allowed: false, reason: 'limite_mensal' }),
+    settle: async () => 0,
   };
   const result = await consented(() => createGateway({ costTracker, deepseek, groq }).complete({ messages, task: 'conversation_reply' }));
 
   assert.deepEqual(result, { ok: false, reason: 'limite_mensal' });
   assert.equal(deepseek.calls.length + groq.calls.length, 0);
+});
+
+test('gateway: retry reserva o orçamento de novo e não acontece se o teto foi atingido', async () => {
+  const deepseek = fakeProvider([httpError(503), { text: 'não deveria chegar aqui', usage: {} }]);
+  const groq = fakeGroq([{ text: 'nem aqui', usage: {} }]);
+  const reserves = [];
+  const settled = [];
+  const costTracker = {
+    reserve: async (provider, usage) => {
+      reserves.push({ provider, usage });
+      return reserves.length === 1
+        ? { allowed: true, reservation: { id: 1 } }
+        : { allowed: false, reason: 'limite_mensal' };
+    },
+    settle: async (reservation, usage) => {
+      settled.push({ reservation, usage });
+      return 0;
+    },
+  };
+  const result = await consented(() => createGateway({ costTracker, deepseek, groq }).complete({ messages, task: 'conversation_reply' }));
+
+  assert.deepEqual(result, { ok: false, reason: 'limite_mensal' });
+  assert.equal(deepseek.calls.length, 1, 'o retry não passa sem nova reserva');
+  assert.equal(groq.calls.length, 0);
+  assert.deepEqual(reserves.map((entry) => entry.provider), ['deepseek', 'deepseek', 'groq-fallback']);
+  assert.deepEqual(reserves[0].usage, { inputTokens: 6, outputTokens: 400, requests: 1 });
+  assert.deepEqual(settled, [{ reservation: { id: 1 }, usage: null }], 'erro 503 devolve a reserva');
+});
+
+test('gateway: duas conversas concorrentes perto do teto — só uma chamada externa acontece', async () => {
+  const { createCostTracker } = require('../src/ai/cost-tracker');
+  const { createFakeFirebase } = require('./helpers/fake-firebase');
+  const firebase = createFakeFirebase(
+    { sistema: { custosIA: { '2026-09': { alertas: { p80: 'x' }, total: 59.995 } } } },
+    { optimisticTransactions: true }
+  );
+  const costTracker = createCostTracker({
+    config: {
+      budget: { alertPercent: 80, deepseekBrl: 35, monthlyBrl: 60, reserveBrl: 15, searchBrl: 10 },
+      pricing: {
+        deepseekInputUsdPerMTok: 1,
+        deepseekOutputUsdPerMTok: 2,
+        groqFallbackInputUsdPerMTok: 1,
+        groqFallbackOutputUsdPerMTok: 2,
+        usdBrlRate: 5,
+      },
+    },
+    db: {},
+    firebaseOps: firebase.ops,
+    logger: { warn() {} },
+    now: () => new Date('2026-09-25T15:00:00.000Z'),
+  });
+  const slowReply = () => new Promise((resolve) => setTimeout(() => resolve({ text: 'ok', usage: { inputTokens: 6, outputTokens: 1 } }), 20));
+  const deepseek = fakeProvider([slowReply, slowReply]);
+  const groq = fakeGroq([slowReply, slowReply]);
+  const gateway = createGateway({ costTracker, deepseek, groq });
+  // Cada tentativa reserva ~R$ 0,004 (6 tokens de entrada + 400 de saída); só cabe uma.
+  const results = await consented(() => Promise.all([
+    gateway.complete({ messages, task: 'conversation_reply' }),
+    gateway.complete({ messages, task: 'conversation_reply' }),
+  ]));
+  const ledger = firebase.getValue('sistema/custosIA/2026-09');
+
+  assert.deepEqual(results.map((result) => result.ok).sort(), [false, true]);
+  assert.equal(results.find((result) => !result.ok).reason, 'limite_mensal');
+  assert.equal(deepseek.calls.length + groq.calls.length, 1);
+  assert.ok(ledger.total <= 60, `total ${ledger.total} passou do teto`);
+  assert.equal(ledger.reservasAbertas, 0);
 });
 
 test('gateway: mensagens enviadas são sanitizadas (sem e-mail, telefone, tag, apelidos e descrições)', async () => {
@@ -277,22 +345,68 @@ test('áudio: bloqueado sem tarifa e cobrado pela duração real informada pela 
       return { durationSeconds: 42, text: 'gastei 30 no mercado' };
     },
   };
-  const blocked = createMeteredGroq({ costTracker: { canSpend: async () => ({ allowed: false, reason: 'tarifa_nao_configurada' }) }, groq, logger: {} });
+  const blocked = createMeteredGroq({ costTracker: { reserve: async () => ({ allowed: false, reason: 'tarifa_nao_configurada' }) }, groq, logger: {} });
 
   await assert.rejects(blocked.transcreverAudio('AAAA'), /tarifa_nao_configurada/);
   assert.equal(calls, 0);
 
+  const reserved = [];
   const metered = createMeteredGroq({
-    costTracker: { canSpend: async () => ({ allowed: true }), record: async (provider, usage) => { recorded.push({ provider, usage }); return 0; } },
+    costTracker: {
+      reserve: async (provider, usage) => {
+        reserved.push({ provider, usage });
+        return { allowed: true, reservation: { provider } };
+      },
+      settle: async (reservation, usage) => {
+        recorded.push({ provider: reservation.provider, usage });
+        return 0;
+      },
+    },
     groq,
     logger: {},
   });
 
   assert.equal(await metered.transcreverAudio('AAAA'), 'gastei 30 no mercado');
-  assert.deepEqual(recorded, [{ provider: 'groq-audio', usage: { audioSeconds: 42, requests: 1 } }]);
+  assert.deepEqual(reserved, [{ provider: 'groq-audio', usage: { audioSeconds: 10, requests: 1 } }], 'reserva pela duração estimada');
+  assert.deepEqual(recorded, [{ provider: 'groq-audio', usage: { audioSeconds: 42, requests: 1 } }], 'liquida pela duração real');
   assert.equal(metered.transcreverAudioDetalhado, undefined, 'variante sem medição não é exposta');
   assert.equal(estimateAudioSeconds('A'.repeat(4000)), 10);
   assert.equal(estimateAudioSeconds('A'.repeat(40000)), 20);
+});
+
+test('router legado: reserva antes de chamar o Groq; sem orçamento não chama e erro devolve a reserva', async () => {
+  let legacyCalls = 0;
+  const settled = [];
+  const groq = {
+    chamarIA: async () => {
+      legacyCalls += 1;
+      throw new Error('http_400');
+    },
+  };
+  const denied = createAiProviderRouter({
+    config: { groqApiKey: 'key' },
+    costTracker: { reserve: async () => ({ allowed: false, reason: 'limite_mensal' }), settle: async () => 0 },
+    groq,
+  });
+
+  assert.equal(await denied.generateText({ fallback: 'determinístico', prompt: 'oi', task: 'monthly_summary' }), 'determinístico');
+  assert.equal(legacyCalls, 0);
+
+  const allowed = createAiProviderRouter({
+    config: { groqApiKey: 'key' },
+    costTracker: {
+      reserve: async (provider, usage) => ({ allowed: true, reservation: { provider, usage } }),
+      settle: async (reservation, usage) => {
+        settled.push({ reservation, usage });
+        return 0;
+      },
+    },
+    groq,
+  });
+
+  assert.equal(await allowed.generateText({ fallback: 'determinístico', prompt: 'oi', task: 'monthly_summary' }), 'determinístico');
+  assert.equal(legacyCalls, 1);
+  assert.deepEqual(settled, [{ reservation: { provider: 'groq-legacy', usage: { inputTokens: 1, outputTokens: 500, requests: 1 } }, usage: null }]);
 });
 
 test('config: modelo legado padrão da Groq é GPT-OSS (llama-3.1-8b-instant foi desativado)', () => {

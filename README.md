@@ -109,8 +109,8 @@ Garantias:
 - Teto mensal padrão de **R$ 60**: R$ 35 DeepSeek, R$ 10 pesquisa, R$ 15 reserva/fallback (tudo configurável).
 - Aos **80%**, o administrador (`ADMIN_PHONE`) recebe um aviso (uma vez por mês). No limite, novas chamadas externas são bloqueadas; funções locais continuam.
 - Nenhum preço de provedor está fixo no código: configure as tarifas (`*_PRICE_*`) e o câmbio (`USD_BRL_RATE`). **Sem tarifa, a chamada fica bloqueada** em qualquer provedor (DeepSeek, Brave e Groq — texto, áudio e imagem), para o teto ser rígido.
-- Antes de cada chamada o custo é estimado; se ele estourar o teto do mês ou da categoria, a chamada não acontece. O Whisper é cobrado pela duração real do áudio (`GROQ_AUDIO_PRICE_USD_PER_HOUR`, mínimo de 10 s).
-- O consumo fica em `sistema/custosIA/{AAAA-MM}` (totais e contagem, sem conteúdo).
+- **Reserva atômica:** antes de cada tentativa (inclusive a nova tentativa após erro transitório), uma única transação do Firebase confere o teto do mês e da categoria e já lança o custo estimado. Se não couber, a chamada não acontece — chamadas simultâneas não passam juntas do limite. Depois da resposta, a reserva é trocada pelo custo real; erro recusado pelo provedor devolve a reserva, e timeout mantém a estimativa (pode ter sido cobrado). O Whisper é cobrado pela duração real do áudio (`GROQ_AUDIO_PRICE_USD_PER_HOUR`, mínimo de 10 s).
+- O consumo fica em `sistema/custosIA/{AAAA-MM}` (totais, contagem e `reservasAbertas`, sem conteúdo). Uma reserva interrompida (ex.: reinício no meio da chamada) continua contando no total — o erro é sempre para o lado de gastar menos.
 
 ## 🔒 Consentimento e privacidade
 
@@ -330,7 +330,7 @@ firebase database:rules:set database.rules.json --project SEU_PROJECT_ID
 | `src/expense-parser.js` | Parser de valor, gasto simples e parcelamento |
 | `src/ai/ai-gateway.js` | DeepSeek → GPT-OSS com timeout, retry único, circuit breaker, orçamento e consentimento |
 | `src/ai/privacy.js` | Redação e sanitização de tudo que sai para provedores externos |
-| `src/ai/cost-tracker.js` | Orçamento mensal, tarifas configuráveis e alertas ao administrador |
+| `src/ai/cost-tracker.js` | Orçamento mensal com reserva atômica, tarifas configuráveis e alertas ao administrador |
 | `src/ai/request-context.js` | Contexto por mensagem (consentimento, `messageId`) |
 | `src/services/idempotency-store.js` | Chaves idempotentes (hash) para ações mutáveis |
 | `src/services/migration-service.js` | Migrações aditivas e idempotentes por usuário |

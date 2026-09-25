@@ -131,13 +131,34 @@ function createAiGateway({
     return null;
   }
 
-  async function record(provider, usage) {
+  function reservedUsage(request) {
+    return {
+      inputTokens: estimateTokens(request.messages),
+      outputTokens: request.maxTokens,
+      requests: 1,
+    };
+  }
+
+  // Reserva atômica do custo estimado antes de cada tentativa (inclusive retry).
+  async function reserve(provider, request) {
     if (!costTracker) {
+      return { allowed: true, reservation: null };
+    }
+
+    try {
+      return await costTracker.reserve(provider, reservedUsage(request));
+    } catch (_) {
+      return { allowed: false, reason: 'controle_indisponivel' };
+    }
+  }
+
+  async function settle(reservation, usage) {
+    if (!costTracker || !reservation) {
       return 0;
     }
 
     try {
-      return await costTracker.record(provider, usage);
+      return await costTracker.settle(reservation, usage);
     } catch (_) {
       logger.warn?.('[ai] falha ao registrar custo.');
       return 0;
@@ -159,13 +180,21 @@ function createAiGateway({
         return { error: new Error('circuit_open'), skipped: 'circuit_open' };
       }
 
+      const budget = await reserve(provider.name, request);
+
+      if (!budget.allowed) {
+        logCall({ durationMs: 0, provider: provider.name, status: `bloqueado_${budget.reason}`, task });
+
+        return { error: lastError || new Error(budget.reason), skipped: budget.reason };
+      }
+
       const timeoutMs = Math.min(provider.timeoutMs, remaining);
       const startedAt = now();
 
       try {
         const result = await withTimeout(provider.call({ ...request, timeoutMs }), timeoutMs);
         const usage = result?.usage || {};
-        const costBrl = await record(provider.name, { ...usage, requests: 1 });
+        const costBrl = await settle(budget.reservation, { ...usage, requests: 1 });
 
         circuitBreaker?.recordSuccess(provider.name);
         logCall({ costBrl, durationMs: now() - startedAt, provider: provider.name, status: 'ok', task, usage });
@@ -175,8 +204,10 @@ function createAiGateway({
         lastError = err;
         circuitBreaker?.recordFailure(provider.name);
 
-        const usage = err?.code === 'timeout' ? { inputTokens: estimateTokens(request.messages) } : {};
-        const costBrl = err?.code === 'timeout' ? await record(provider.name, { ...usage, requests: 1 }) : 0;
+        // Timeout pode ter sido processado (e cobrado) pelo provedor: a estimativa
+        // reservada fica lançada. Erro recusado pelo provedor não é faturável: a reserva é devolvida.
+        const usage = err?.code === 'timeout' ? reservedUsage(request) : null;
+        const costBrl = await settle(budget.reservation, usage);
 
         logCall({
           costBrl,
@@ -184,7 +215,7 @@ function createAiGateway({
           provider: provider.name,
           status: err?.code === 'timeout' ? 'timeout' : 'error',
           task,
-          usage,
+          usage: usage || {},
         });
 
         // Retry limitado a uma nova tentativa para falhas transitórias; nunca em loop.
@@ -230,19 +261,6 @@ function createAiGateway({
     for (const provider of providers) {
       if (!provider.available()) {
         continue;
-      }
-
-      if (costTracker) {
-        const budget = await costTracker.canSpend(provider.name, {
-          inputTokens: estimateTokens(sanitized),
-          outputTokens: request.maxTokens,
-        });
-
-        if (!budget.allowed) {
-          lastReason = budget.reason;
-          logCall({ durationMs: 0, provider: provider.name, status: `bloqueado_${budget.reason}`, task });
-          continue;
-        }
       }
 
       const { error, result, skipped } = await attemptProvider(provider, request, deadline, task);

@@ -40,19 +40,25 @@ function createMeteredGroq({
       throw blockedError('circuit_open');
     }
 
+    let reservation = null;
+
+    // Reserva atômica do custo estimado antes da chamada.
     if (costTracker) {
-      const budget = await costTracker.canSpend(provider, estimatedUsage);
+      const budget = await costTracker.reserve(provider, { requests: 1, ...estimatedUsage })
+        .catch(() => ({ allowed: false, reason: 'controle_indisponivel' }));
 
       if (!budget.allowed) {
         throw blockedError(budget.reason);
       }
+
+      reservation = budget.reservation;
     }
 
     const startedAt = now();
 
     try {
       const { result, usage } = await fn();
-      const costBrl = costTracker ? await costTracker.record(provider, { requests: 1, ...usage }).catch(() => 0) : 0;
+      const costBrl = reservation ? await costTracker.settle(reservation, { requests: 1, ...usage }).catch(() => 0) : 0;
 
       circuitBreaker?.recordSuccess(provider);
       logger.info?.('[ai]', { costBrl, durationMs: now() - startedAt, provider, status: 'ok', task, tokensIn: 0, tokensOut: 0 });
@@ -60,7 +66,14 @@ function createMeteredGroq({
       return result;
     } catch (err) {
       circuitBreaker?.recordFailure(provider);
-      logger.info?.('[ai]', { costBrl: 0, durationMs: now() - startedAt, provider, status: 'error', task, tokensIn: 0, tokensOut: 0 });
+
+      // Timeout pode ter sido processado (e cobrado): mantém a estimativa. Outros erros devolvem a reserva.
+      const timedOut = err?.code === 'ETIMEDOUT' || err?.code === 'ECONNABORTED' || /timeout|timed out/i.test(String(err?.message || ''));
+      const costBrl = reservation
+        ? await costTracker.settle(reservation, timedOut ? { requests: 1, ...estimatedUsage } : null).catch(() => 0)
+        : 0;
+
+      logger.info?.('[ai]', { costBrl, durationMs: now() - startedAt, provider, status: timedOut ? 'timeout' : 'error', task, tokensIn: 0, tokensOut: 0 });
       throw err;
     }
   }

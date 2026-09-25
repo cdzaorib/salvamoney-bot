@@ -184,12 +184,18 @@ function createInvestmentResearchService({
       return { error: 'deadline', product };
     }
 
+    let reservation = null;
+
+    // Reserva atômica do custo antes da busca.
     if (costTracker) {
-      const budget = await costTracker.canSpend('brave', { requests: 1 });
+      const budget = await costTracker.reserve('brave', { requests: 1 })
+        .catch(() => ({ allowed: false, reason: 'controle_indisponivel' }));
 
       if (!budget.allowed) {
         return { error: budget.reason, product };
       }
+
+      reservation = budget.reservation;
     }
 
     const startedAt = now().getTime();
@@ -197,13 +203,20 @@ function createInvestmentResearchService({
     try {
       const timeout = Math.min(perQueryTimeout, remaining);
       const results = await withDeadline(braveClient.search(product.query, { timeoutMs: timeout }), timeout);
-      const costBrl = costTracker ? await costTracker.record('brave', { requests: 1 }).catch(() => 0) : 0;
+      const costBrl = reservation ? await costTracker.settle(reservation, { requests: 1 }).catch(() => 0) : 0;
 
       logger.info?.('[research]', { costBrl, durationMs: now().getTime() - startedAt, provider: 'brave', status: 'ok', task: 'investment_research' });
 
       return { product, results };
     } catch (err) {
-      logger.info?.('[research]', { costBrl: 0, durationMs: now().getTime() - startedAt, provider: 'brave', status: err?.code || 'error', task: 'investment_research' });
+      // Busca não enviada (sem chave) ou recusada pela API (4xx) devolve a reserva;
+      // timeout e falha de rede mantêm a estimativa, pois a requisição pode ter sido cobrada.
+      const billable = err?.code !== 'not_configured' && !/^http_4\d\d$/.test(String(err?.message || ''));
+      const costBrl = reservation
+        ? await costTracker.settle(reservation, billable ? { requests: 1 } : null).catch(() => 0)
+        : 0;
+
+      logger.info?.('[research]', { costBrl, durationMs: now().getTime() - startedAt, provider: 'brave', status: err?.code || 'error', task: 'investment_research' });
 
       return { error: err?.code || 'error', product };
     }

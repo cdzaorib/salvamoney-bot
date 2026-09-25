@@ -50,8 +50,9 @@ function createAiHarness({ deepseekChat, groqChat, seed = consentedSeed() } = {}
     },
   };
   const lazyTracker = {
-    canSpend: (provider) => harness.costTracker.canSpend(provider),
-    record: (provider, usage) => harness.costTracker.record(provider, usage),
+    release: (reservation) => harness.costTracker.release(reservation),
+    reserve: (provider, usage) => harness.costTracker.reserve(provider, usage),
+    settle: (reservation, usage) => harness.costTracker.settle(reservation, usage),
   };
   const aiGateway = createAiGateway({
     circuitBreaker: createCircuitBreaker(),

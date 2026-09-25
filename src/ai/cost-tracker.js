@@ -50,8 +50,6 @@ const BUCKET_LIMIT_KEYS = {
   reserva: 'reserveBrl',
 };
 
-const CACHE_TTL_MS = 30 * 1000;
-
 function round6(value) {
   return Math.round(Number(value || 0) * 1e6) / 1e6;
 }
@@ -70,6 +68,7 @@ function emptyLedger() {
       pesquisa: { chamadas: 0, custo: 0 },
       reserva: { chamadas: 0, custo: 0 },
     },
+    reservasAbertas: 0,
     tokens: { entrada: 0, saida: 0 },
     total: 0,
   };
@@ -91,6 +90,7 @@ function normalizeLedger(value) {
     saida: Number(current.tokens?.saida || 0),
   };
   base.total = round6(current.total || 0);
+  base.reservasAbertas = round6(current.reservasAbertas || 0);
 
   if (current.alertas) {
     base.alertas = { ...current.alertas };
@@ -115,7 +115,6 @@ function createCostTracker({
   const budget = config?.budget || {};
   const pricing = config?.pricing || {};
   const timeZone = config?.timeZone || 'America/Sao_Paulo';
-  const cache = new Map();
 
   function monthKey(date = now()) {
     const parts = Object.fromEntries(
@@ -177,70 +176,16 @@ function createCostTracker({
     return round6(requests * Number(pricing[meta.priceKey]) * rate);
   }
 
-  async function readLedger({ fresh = false } = {}) {
-    const key = monthKey();
-    const cached = cache.get(key);
+  async function readLedger() {
+    const snap = await get(ref(db, ledgerPath(monthKey())));
 
-    if (!fresh && cached && now().getTime() - cached.at < CACHE_TTL_MS) {
-      return cached.ledger;
-    }
-
-    const snap = await get(ref(db, ledgerPath(key)));
-    const ledger = normalizeLedger(snap.val());
-
-    cache.set(key, { at: now().getTime(), ledger });
-
-    return ledger;
+    return normalizeLedger(snap.val());
   }
 
   function bucketLimit(bucket) {
     const value = Number(budget[BUCKET_LIMIT_KEYS[bucket]]);
 
     return Number.isFinite(value) ? value : 0;
-  }
-
-  // estimatedUsage permite recusar antes uma chamada que estouraria o teto.
-  async function canSpend(provider, estimatedUsage = null) {
-    const meta = PROVIDERS[provider];
-
-    if (!meta) {
-      return { allowed: false, reason: 'provedor_desconhecido' };
-    }
-
-    if (!pricingConfigured(provider)) {
-      return { allowed: false, reason: 'tarifa_nao_configurada' };
-    }
-
-    let ledger;
-
-    try {
-      ledger = await readLedger();
-    } catch (_) {
-      // Sem leitura do controle de custos, a política é não gastar.
-      return { allowed: false, reason: 'controle_indisponivel' };
-    }
-
-    const monthlyLimit = Number(budget.monthlyBrl);
-
-    if (Number.isFinite(monthlyLimit) && ledger.total >= monthlyLimit) {
-      return { allowed: false, reason: 'limite_mensal' };
-    }
-
-    if (ledger.buckets[meta.bucket].custo >= bucketLimit(meta.bucket)) {
-      return { allowed: false, reason: 'limite_categoria' };
-    }
-
-    const estimate = estimatedUsage ? estimateCost(provider, estimatedUsage) : 0;
-
-    if (estimate > 0 && Number.isFinite(monthlyLimit) && ledger.total + estimate > monthlyLimit) {
-      return { allowed: false, reason: 'limite_mensal' };
-    }
-
-    if (estimate > 0 && ledger.buckets[meta.bucket].custo + estimate > bucketLimit(meta.bucket)) {
-      return { allowed: false, reason: 'limite_categoria' };
-    }
-
-    return { allowed: true };
   }
 
   async function notifyAdmin(message) {
@@ -290,33 +235,113 @@ function createCostTracker({
     }
   }
 
-  async function record(provider, usage = {}) {
+  function limitReason(ledger, bucket, amount) {
+    const monthlyLimit = Number(budget.monthlyBrl);
+
+    if (Number.isFinite(monthlyLimit) && (ledger.total >= monthlyLimit || round6(ledger.total + amount) > monthlyLimit)) {
+      return 'limite_mensal';
+    }
+
+    const categoryLimit = bucketLimit(bucket);
+    const categorySpent = ledger.buckets[bucket].custo;
+
+    if (categorySpent >= categoryLimit || round6(categorySpent + amount) > categoryLimit) {
+      return 'limite_categoria';
+    }
+
+    return null;
+  }
+
+  // Reserva atômica: numa única transação do Firebase confere o teto (mês e
+  // categoria) e já lança o custo estimado. Chamadas concorrentes não passam
+  // juntas do limite. Deve ser chamada antes de CADA tentativa (inclusive retry).
+  async function reserve(provider, estimatedUsage = {}) {
     const meta = PROVIDERS[provider];
 
     if (!meta) {
+      return { allowed: false, reason: 'provedor_desconhecido' };
+    }
+
+    if (!pricingConfigured(provider)) {
+      return { allowed: false, reason: 'tarifa_nao_configurada' };
+    }
+
+    const amount = estimateCost(provider, estimatedUsage || {});
+    const key = monthKey();
+    let denied = null;
+    let result;
+
+    try {
+      result = await transaction(ref(db, ledgerPath(key)), (current) => {
+        const next = normalizeLedger(current);
+
+        denied = limitReason(next, meta.bucket, amount);
+
+        if (denied) {
+          return undefined;
+        }
+
+        next.total = round6(next.total + amount);
+        next.buckets[meta.bucket].custo = round6(next.buckets[meta.bucket].custo + amount);
+        next.reservasAbertas = round6(next.reservasAbertas + amount);
+        next.atualizadoEm = now().toISOString();
+
+        return next;
+      });
+    } catch (_) {
+      // Sem o controle de custos disponível, a política é não gastar.
+      return { allowed: false, reason: 'controle_indisponivel' };
+    }
+
+    if (result?.committed !== true) {
+      return { allowed: false, reason: denied || 'controle_indisponivel' };
+    }
+
+    return {
+      allowed: true,
+      reservation: {
+        amount,
+        bucket: meta.bucket,
+        monthKey: key,
+        provider,
+        settled: false,
+      },
+    };
+  }
+
+  // Troca o valor reservado pelo custo real (pode ser menor ou maior). Uma
+  // reserva só é liquidada uma vez; sem uso faturável, devolve o valor reservado.
+  async function settle(reservation, actualUsage = null) {
+    if (!reservation || reservation.settled) {
       return 0;
     }
 
-    const cost = estimateCost(provider, usage);
-    const key = monthKey();
-    const result = await transaction(ref(db, ledgerPath(key)), (current) => {
+    reservation.settled = true;
+
+    const billable = actualUsage !== null && actualUsage !== undefined;
+    const cost = billable ? estimateCost(reservation.provider, actualUsage) : 0;
+    const delta = round6(cost - reservation.amount);
+    const result = await transaction(ref(db, ledgerPath(reservation.monthKey)), (current) => {
       const next = normalizeLedger(current);
 
-      next.total = round6(next.total + cost);
-      next.buckets[meta.bucket].custo = round6(next.buckets[meta.bucket].custo + cost);
-      next.buckets[meta.bucket].chamadas += Number(usage.requests ?? 1);
-      next.tokens.entrada += Number(usage.inputTokens || 0);
-      next.tokens.saida += Number(usage.outputTokens || 0);
+      next.total = round6(Math.max(0, next.total + delta));
+      next.buckets[reservation.bucket].custo = round6(Math.max(0, next.buckets[reservation.bucket].custo + delta));
+      next.reservasAbertas = round6(Math.max(0, next.reservasAbertas - reservation.amount));
+
+      if (billable) {
+        next.buckets[reservation.bucket].chamadas += Number(actualUsage.requests ?? 1);
+        next.tokens.entrada += Number(actualUsage.inputTokens || 0);
+        next.tokens.saida += Number(actualUsage.outputTokens || 0);
+      }
+
       next.atualizadoEm = now().toISOString();
 
       return next;
     });
     const ledger = normalizeLedger(result?.snapshot?.val?.());
 
-    cache.set(key, { at: now().getTime(), ledger });
-
     try {
-      await checkThresholds(key, ledger);
+      await checkThresholds(reservation.monthKey, ledger);
     } catch (_) {
       logger.warn?.('[ai-budget] falha ao verificar limites do orçamento.');
     }
@@ -324,8 +349,12 @@ function createCostTracker({
     return cost;
   }
 
+  async function release(reservation) {
+    return await settle(reservation, null);
+  }
+
   async function usage() {
-    const ledger = await readLedger({ fresh: true });
+    const ledger = await readLedger();
 
     return {
       ...ledger,
@@ -335,11 +364,12 @@ function createCostTracker({
   }
 
   return {
-    canSpend,
     estimateCost,
     monthKey,
     pricingConfigured,
-    record,
+    release,
+    reserve,
+    settle,
     usage,
   };
 }
