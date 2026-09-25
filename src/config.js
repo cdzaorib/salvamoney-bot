@@ -60,7 +60,8 @@ const config = {
   groqApiKey: process.env.GROQ_API_KEY,
   groqChatUrl: 'https://api.groq.com/openai/v1/chat/completions',
   groqAudioUrl: 'https://api.groq.com/openai/v1/audio/transcriptions',
-  groqModel: process.env.GROQ_MODEL || 'llama-3.1-8b-instant',
+  // llama-3.1-8b-instant foi desativado nos planos Free/Developer da Groq.
+  groqModel: process.env.GROQ_MODEL || 'openai/gpt-oss-20b',
   groqVisionModel: process.env.GROQ_VISION_MODEL || 'meta-llama/llama-4-scout-17b-16e-instruct',
   groqAudioModel: process.env.GROQ_AUDIO_MODEL || 'whisper-large-v3-turbo',
   groqFallbackModel: process.env.GROQ_FALLBACK_MODEL || 'openai/gpt-oss-20b',
@@ -121,7 +122,7 @@ const config = {
     groqFallbackOutputUsdPerMTok: envOptionalNumber('GROQ_FALLBACK_PRICE_OUTPUT_USD_PER_MTOK'),
     groqLegacyInputUsdPerMTok: envOptionalNumber('GROQ_LEGACY_PRICE_INPUT_USD_PER_MTOK'),
     groqLegacyOutputUsdPerMTok: envOptionalNumber('GROQ_LEGACY_PRICE_OUTPUT_USD_PER_MTOK'),
-    groqAudioUsdPerRequest: envOptionalNumber('GROQ_AUDIO_PRICE_USD_PER_REQUEST'),
+    groqAudioUsdPerHour: envOptionalNumber('GROQ_AUDIO_PRICE_USD_PER_HOUR'),
     groqVisionUsdPerRequest: envOptionalNumber('GROQ_VISION_PRICE_USD_PER_REQUEST'),
     braveUsdPer1000Requests: envOptionalNumber('BRAVE_PRICE_USD_PER_1000_REQUESTS'),
   },
@@ -218,6 +219,19 @@ function featureWarnings(currentConfig = config) {
 
   if (features.investmentResearch && (pricing.braveUsdPer1000Requests === null || pricing.usdBrlRate === null)) {
     warnings.push('⚠️ Tarifa da Brave ou USD_BRL_RATE não configurada. Pesquisas ao vivo ficam bloqueadas até configurar.');
+  }
+
+  const groqPrices = [
+    'groqLegacyInputUsdPerMTok',
+    'groqLegacyOutputUsdPerMTok',
+    'groqFallbackInputUsdPerMTok',
+    'groqFallbackOutputUsdPerMTok',
+    'groqAudioUsdPerHour',
+    'groqVisionUsdPerRequest',
+  ];
+
+  if (currentConfig.groqApiKey && (pricing.usdBrlRate === null || groqPrices.some((key) => pricing[key] === null || pricing[key] === undefined))) {
+    warnings.push('⚠️ Tarifas da Groq incompletas. Chamadas sem tarifa (texto, áudio ou imagem) ficam bloqueadas pelo controle de custos.');
   }
 
   if (features.splits && !features.friends) {

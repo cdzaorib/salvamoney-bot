@@ -185,7 +185,7 @@ function createInvestmentResearchService({
     }
 
     if (costTracker) {
-      const budget = await costTracker.canSpend('brave');
+      const budget = await costTracker.canSpend('brave', { requests: 1 });
 
       if (!budget.allowed) {
         return { error: budget.reason, product };

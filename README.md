@@ -36,7 +36,8 @@ Variáveis novas para produção (detalhes no `.env.example`):
 
 - IA: `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL`, `GROQ_FALLBACK_MODEL`, `AI_CONSENT_VERSION`
 - Pesquisa: `BRAVE_API_KEY`
-- Custos: `AI_MONTHLY_BUDGET_BRL` e divisão por categoria, `ADMIN_PHONE`, `USD_BRL_RATE` e as tarifas `*_PRICE_*`
+- Custos: `AI_MONTHLY_BUDGET_BRL` e divisão por categoria, `ADMIN_PHONE`, `USD_BRL_RATE` e as tarifas `*_PRICE_*` (obrigatórias para qualquer chamada externa, inclusive áudio e imagem)
+- Modelo Groq: `GROQ_MODEL=openai/gpt-oss-20b` (o antigo `llama-3.1-8b-instant` foi desativado nos planos Free/Developer)
 - Flags: `FEATURE_*` (cada uma com `true` explícito)
 - Timeouts/schedulers: `AI_*_MS`, `DEEPSEEK_TIMEOUT_MS`, `BRAVE_TIMEOUT_MS`, `PROACTIVE_*`
 
@@ -107,7 +108,8 @@ Garantias:
 
 - Teto mensal padrão de **R$ 60**: R$ 35 DeepSeek, R$ 10 pesquisa, R$ 15 reserva/fallback (tudo configurável).
 - Aos **80%**, o administrador (`ADMIN_PHONE`) recebe um aviso (uma vez por mês). No limite, novas chamadas externas são bloqueadas; funções locais continuam.
-- Nenhum preço de provedor está fixo no código: configure as tarifas (`*_PRICE_*`) e o câmbio (`USD_BRL_RATE`). Sem tarifa, DeepSeek e Brave ficam bloqueadas; Groq conta custo zero.
+- Nenhum preço de provedor está fixo no código: configure as tarifas (`*_PRICE_*`) e o câmbio (`USD_BRL_RATE`). **Sem tarifa, a chamada fica bloqueada** em qualquer provedor (DeepSeek, Brave e Groq — texto, áudio e imagem), para o teto ser rígido.
+- Antes de cada chamada o custo é estimado; se ele estourar o teto do mês ou da categoria, a chamada não acontece. O Whisper é cobrado pela duração real do áudio (`GROQ_AUDIO_PRICE_USD_PER_HOUR`, mínimo de 10 s).
 - O consumo fica em `sistema/custosIA/{AAAA-MM}` (totais e contagem, sem conteúdo).
 
 ## 🔒 Consentimento e privacidade
@@ -257,7 +259,8 @@ Nada é apagado ou renomeado; tags, sessões, usuários, gastos, cobranças, par
 ## ⚠️ Limitações
 
 - Sem integração bancária: fechamento de fatura é estimado e pagamentos dependem da confirmação de quem recebe.
-- O custo de áudio/imagem é estimado por requisição; tokens das chamadas antigas ao Groq são estimados pelo tamanho do texto.
+- O custo de imagem é estimado por requisição; tokens das chamadas antigas ao Groq são estimados pelo tamanho do texto.
+- Com a IA conversacional ligada, as chamadas antigas ao Groq (resumo, dicas, classificador de categoria) também exigem o consentimento do usuário e recebem conteúdo sanitizado.
 - O contexto da IA fica em memória: reiniciar o processo limpa a conversa (dados financeiros não se perdem).
 - Pesquisa depende da disponibilidade da Brave e das fontes; sem tarifa configurada ela fica em modo "sem verificação ao vivo".
 - Orientações são educativas e não substituem consultoria profissional personalizada.

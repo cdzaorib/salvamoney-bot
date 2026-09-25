@@ -1,5 +1,6 @@
 'use strict';
 
+const { sanitizeMessages } = require('./privacy');
 const { getContext } = require('./request-context');
 
 const DEFAULT_TIMEOUT_MS = 8000;
@@ -80,7 +81,7 @@ function createAiProviderRouter({
     return Boolean(config?.groqApiKey && groq?.chamarIA);
   }
 
-  async function legacyAllowed() {
+  async function legacyAllowed(messages) {
     if (circuitBreaker && !circuitBreaker.canRequest('groq-legacy')) {
       return false;
     }
@@ -89,7 +90,10 @@ function createAiProviderRouter({
       return true;
     }
 
-    const budget = await costTracker.canSpend('groq-legacy');
+    const budget = await costTracker.canSpend('groq-legacy', {
+      inputTokens: estimateTokens(messages.map((message) => message.content).join('\n')),
+      outputTokens: 500,
+    });
 
     return budget.allowed;
   }
@@ -127,20 +131,34 @@ function createAiProviderRouter({
       }
     }
 
-    if (!hasGroq() || !(await legacyAllowed())) {
+    let legacyMessages = resolvedMessages;
+
+    // Com a IA conversacional ativa, o Groq legado segue as mesmas regras:
+    // só com consentimento e sempre com o conteúdo sanitizado.
+    if (aiGateway?.isEnabled?.()) {
+      const context = getContext();
+
+      if (context?.aiConsent !== true) {
+        return resolveFallback(fallback);
+      }
+
+      legacyMessages = sanitizeMessages(resolvedMessages, { knownTags: context.tag ? [context.tag] : [] });
+    }
+
+    if (!hasGroq() || !(await legacyAllowed(legacyMessages))) {
       return resolveFallback(fallback);
     }
 
     try {
       const response = await withTimeout(
-        groq.chamarIA(resolvedMessages),
+        groq.chamarIA(legacyMessages),
         timeoutMs
       );
       const cleanResponse = String(response || '').trim();
 
       circuitBreaker?.recordSuccess('groq-legacy');
       await costTracker?.record('groq-legacy', {
-        inputTokens: estimateTokens(resolvedMessages.map((message) => message.content).join('\n')),
+        inputTokens: estimateTokens(legacyMessages.map((message) => message.content).join('\n')),
         outputTokens: estimateTokens(cleanResponse),
         requests: 1,
       }).catch(() => 0);

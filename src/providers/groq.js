@@ -1,12 +1,13 @@
 'use strict';
 
-const axios = require('axios');
+// O polyfill precisa vir antes de axios/groq-sdk: no Node 24 o undici usa File ao carregar.
 const { File } = require('node:buffer');
 
 if (!globalThis.File) {
   globalThis.File = File;
 }
 
+const axios = require('axios');
 const Groq = require('groq-sdk');
 
 function createGroqClient(config) {
@@ -45,6 +46,7 @@ function createGroqClient(config) {
         messages: mensagens,
         temperature: 0.2,
         max_tokens: 500,
+        ...(String(config.groqModel || '').startsWith('openai/gpt-oss') ? { reasoning_effort: 'low' } : {}),
       },
       {
         maxRetries: 0,
@@ -55,7 +57,8 @@ function createGroqClient(config) {
     return r.choices?.[0]?.message?.content?.trim() || '';
   }
 
-  async function transcreverAudio(base64Audio, mimeType = 'audio/ogg') {
+  // verbose_json devolve a duração, usada para o custo real do Whisper (cobrado por hora).
+  async function transcreverAudioDetalhado(base64Audio, mimeType = 'audio/ogg') {
     if (!config.groqApiKey) {
       throw new Error('GROQ_API_KEY ausente.');
     }
@@ -73,14 +76,22 @@ function createGroqClient(config) {
         }),
         model: config.groqAudioModel,
         language: 'pt',
-        response_format: 'json',
+        response_format: 'verbose_json',
       },
       {
         timeout: config.groqAudioTimeoutMs || 60000,
       }
     );
+    const durationSeconds = Number(r.duration);
 
-    return r.text?.trim() || '';
+    return {
+      durationSeconds: Number.isFinite(durationSeconds) ? durationSeconds : null,
+      text: r.text?.trim() || '',
+    };
+  }
+
+  async function transcreverAudio(base64Audio, mimeType = 'audio/ogg') {
+    return (await transcreverAudioDetalhado(base64Audio, mimeType)).text;
   }
 
   async function analisarImagem(base64Image, mimeType = 'image/jpeg') {
@@ -191,6 +202,7 @@ Nunca invente valor.`,
     chamarIA,
     chatCompletion,
     transcreverAudio,
+    transcreverAudioDetalhado,
   };
 }
 

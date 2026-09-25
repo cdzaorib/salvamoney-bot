@@ -3,47 +3,46 @@
 // Controle mensal de custos das chamadas externas (IA e pesquisa).
 // Nenhuma tarifa é fixada no código: preços e câmbio vêm da configuração.
 
+// Todos os provedores exigem tarifa configurada: sem preço, a chamada é bloqueada
+// (falha fechada), para que o teto mensal seja sempre rígido.
 const PROVIDERS = {
   brave: {
     bucket: 'pesquisa',
     pricing: 'per1000',
     priceKey: 'braveUsdPer1000Requests',
-    requirePricing: true,
   },
   deepseek: {
     bucket: 'deepseek',
     inputKey: 'deepseekInputUsdPerMTok',
     outputKey: 'deepseekOutputUsdPerMTok',
     pricing: 'tokens',
-    requirePricing: true,
   },
+  // Whisper é cobrado por duração do áudio, com mínimo de 10 segundos por requisição.
   'groq-audio': {
     bucket: 'reserva',
-    pricing: 'request',
-    priceKey: 'groqAudioUsdPerRequest',
-    requirePricing: false,
+    pricing: 'duration',
+    priceKey: 'groqAudioUsdPerHour',
   },
   'groq-fallback': {
     bucket: 'reserva',
     inputKey: 'groqFallbackInputUsdPerMTok',
     outputKey: 'groqFallbackOutputUsdPerMTok',
     pricing: 'tokens',
-    requirePricing: false,
   },
   'groq-legacy': {
     bucket: 'reserva',
     inputKey: 'groqLegacyInputUsdPerMTok',
     outputKey: 'groqLegacyOutputUsdPerMTok',
     pricing: 'tokens',
-    requirePricing: false,
   },
   'groq-vision': {
     bucket: 'reserva',
     pricing: 'request',
     priceKey: 'groqVisionUsdPerRequest',
-    requirePricing: false,
   },
 };
+
+const MIN_AUDIO_SECONDS = 10;
 
 const BUCKET_LIMIT_KEYS = {
   deepseek: 'deepseekBrl',
@@ -169,6 +168,12 @@ function createCostTracker({
       return round6(requests * Number(pricing[meta.priceKey]) / 1000 * rate);
     }
 
+    if (meta.pricing === 'duration') {
+      const seconds = Math.max(MIN_AUDIO_SECONDS, Number(usage.audioSeconds || 0)) * Math.max(1, requests);
+
+      return round6(seconds / 3600 * Number(pricing[meta.priceKey]) * rate);
+    }
+
     return round6(requests * Number(pricing[meta.priceKey]) * rate);
   }
 
@@ -194,14 +199,15 @@ function createCostTracker({
     return Number.isFinite(value) ? value : 0;
   }
 
-  async function canSpend(provider) {
+  // estimatedUsage permite recusar antes uma chamada que estouraria o teto.
+  async function canSpend(provider, estimatedUsage = null) {
     const meta = PROVIDERS[provider];
 
     if (!meta) {
       return { allowed: false, reason: 'provedor_desconhecido' };
     }
 
-    if (meta.requirePricing && !pricingConfigured(provider)) {
+    if (!pricingConfigured(provider)) {
       return { allowed: false, reason: 'tarifa_nao_configurada' };
     }
 
@@ -221,6 +227,16 @@ function createCostTracker({
     }
 
     if (ledger.buckets[meta.bucket].custo >= bucketLimit(meta.bucket)) {
+      return { allowed: false, reason: 'limite_categoria' };
+    }
+
+    const estimate = estimatedUsage ? estimateCost(provider, estimatedUsage) : 0;
+
+    if (estimate > 0 && Number.isFinite(monthlyLimit) && ledger.total + estimate > monthlyLimit) {
+      return { allowed: false, reason: 'limite_mensal' };
+    }
+
+    if (estimate > 0 && ledger.buckets[meta.bucket].custo + estimate > bucketLimit(meta.bucket)) {
       return { allowed: false, reason: 'limite_categoria' };
     }
 

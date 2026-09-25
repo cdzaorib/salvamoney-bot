@@ -9,8 +9,9 @@ const PRICED = {
   braveUsdPer1000Requests: 5,
   deepseekInputUsdPerMTok: 1,
   deepseekOutputUsdPerMTok: 2,
-  groqFallbackInputUsdPerMTok: null,
-  groqFallbackOutputUsdPerMTok: null,
+  groqAudioUsdPerHour: 0.04,
+  groqFallbackInputUsdPerMTok: 0.1,
+  groqFallbackOutputUsdPerMTok: 0.5,
   usdBrlRate: 5,
 };
 const BUDGET = {
@@ -40,13 +41,32 @@ function createTracker({ budget = BUDGET, pricing = PRICED, seed = {} } = {}) {
   return { firebase, sent, tracker };
 }
 
-test('custos: sem tarifa configurada a DeepSeek e a Brave ficam bloqueadas (sem preço fixo no código)', async () => {
+test('custos: sem tarifa configurada todo provedor fica bloqueado (falha fechada, sem preço fixo no código)', async () => {
   const { tracker } = createTracker({ pricing: { usdBrlRate: null } });
 
-  assert.deepEqual(await tracker.canSpend('deepseek'), { allowed: false, reason: 'tarifa_nao_configurada' });
-  assert.deepEqual(await tracker.canSpend('brave'), { allowed: false, reason: 'tarifa_nao_configurada' });
-  assert.deepEqual(await tracker.canSpend('groq-fallback'), { allowed: true });
-  assert.equal(tracker.estimateCost('groq-fallback', { inputTokens: 1e6, outputTokens: 1e6 }), 0);
+  for (const provider of ['deepseek', 'brave', 'groq-fallback', 'groq-legacy', 'groq-audio', 'groq-vision']) {
+    assert.deepEqual(await tracker.canSpend(provider), { allowed: false, reason: 'tarifa_nao_configurada' }, provider);
+  }
+
+  const partial = createTracker({ pricing: { ...PRICED, groqLegacyInputUsdPerMTok: 0.05 } }).tracker;
+
+  assert.deepEqual(await partial.canSpend('groq-legacy'), { allowed: false, reason: 'tarifa_nao_configurada' });
+});
+
+test('custos: Whisper é cobrado por duração (mínimo de 10 s por requisição)', async () => {
+  const { tracker } = createTracker();
+
+  assert.equal(tracker.estimateCost('groq-audio', { audioSeconds: 3600 }), 0.2);
+  assert.equal(tracker.estimateCost('groq-audio', { audioSeconds: 3 }), tracker.estimateCost('groq-audio', { audioSeconds: 10 }));
+});
+
+test('custos: chamada cuja estimativa estouraria o teto é recusada antes de acontecer', async () => {
+  const { tracker } = createTracker({
+    seed: { sistema: { custosIA: { '2026-09': { alertas: { p80: 'x' }, buckets: { deepseek: { custo: 20 } }, total: 59.99 } } } },
+  });
+
+  assert.deepEqual(await tracker.canSpend('deepseek', { inputTokens: 100, outputTokens: 100 }), { allowed: true });
+  assert.deepEqual(await tracker.canSpend('deepseek', { inputTokens: 10_000, outputTokens: 10_000 }), { allowed: false, reason: 'limite_mensal' });
 });
 
 test('custos: estimativa usa tarifas e câmbio da configuração e grava por categoria', async () => {

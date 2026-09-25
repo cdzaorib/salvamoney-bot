@@ -233,7 +233,10 @@ function createAiGateway({
       }
 
       if (costTracker) {
-        const budget = await costTracker.canSpend(provider.name);
+        const budget = await costTracker.canSpend(provider.name, {
+          inputTokens: estimateTokens(sanitized),
+          outputTokens: request.maxTokens,
+        });
 
         if (!budget.allowed) {
           lastReason = budget.reason;

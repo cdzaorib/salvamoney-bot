@@ -224,3 +224,90 @@ test('router legado: com gateway elegível que falha não empilha chamada extra 
   assert.equal(result, 'determinístico');
   assert.equal(legacyCalls, 0);
 });
+
+test('router legado: com a IA conversacional ativa, sem consentimento o Groq não é chamado', async () => {
+  let sent = null;
+  const gateway = createGateway({ deepseek: fakeProvider([{ text: 'x', usage: {} }]), groq: fakeGroq([]) });
+  const router = createAiProviderRouter({
+    aiGateway: gateway,
+    config: { groqApiKey: 'key' },
+    groq: { chamarIA: async (messages) => { sent = messages; return 'legado'; } },
+  });
+  const payload = [{ content: `Dados:\n${JSON.stringify({ maioresGastos: [{ descricao: 'Presente da Julia', valor: 90 }] })}`, role: 'user' }];
+
+  for (const task of ['financial_advice', 'expense_category_classifier']) {
+    const result = await runWithContext({ aiConsent: false, tag: '111111' }, () =>
+      router.generateText({ fallback: 'determinístico', messages: payload, task }));
+
+    assert.equal(result, 'determinístico', task);
+  }
+
+  assert.equal(sent, null);
+});
+
+test('router legado: com consentimento, o Groq recebe o conteúdo já sanitizado', async () => {
+  let sent = null;
+  const gateway = createGateway({ config: { ...BASE_CONFIG, features: { conversationalAi: true } }, deepseek: fakeProvider([]), groq: fakeGroq([]) });
+  const router = createAiProviderRouter({
+    aiGateway: gateway,
+    config: { groqApiKey: 'key' },
+    groq: { chamarIA: async (messages) => { sent = messages; return 'ok'; } },
+  });
+
+  await runWithContext({ aiConsent: true, tag: '111111' }, () => router.generateText({
+    fallback: 'x',
+    messages: [{ content: `Dados:\n${JSON.stringify({ maioresGastos: [{ descricao: 'Presente da Julia', valor: 90 }], tag: '111111' })}`, role: 'user' }],
+    task: 'expense_category_classifier',
+  }));
+
+  const text = sent.map((message) => message.content).join('\n');
+
+  assert.doesNotMatch(text, /Julia|111111/);
+  assert.match(text, /"valor": 90/);
+});
+
+test('áudio: bloqueado sem tarifa e cobrado pela duração real informada pela Groq', async () => {
+  const { createMeteredGroq, estimateAudioSeconds } = require('../src/ai/metered-groq');
+  const recorded = [];
+  let calls = 0;
+  const groq = {
+    transcreverAudio: async () => 'texto',
+    transcreverAudioDetalhado: async () => {
+      calls += 1;
+      return { durationSeconds: 42, text: 'gastei 30 no mercado' };
+    },
+  };
+  const blocked = createMeteredGroq({ costTracker: { canSpend: async () => ({ allowed: false, reason: 'tarifa_nao_configurada' }) }, groq, logger: {} });
+
+  await assert.rejects(blocked.transcreverAudio('AAAA'), /tarifa_nao_configurada/);
+  assert.equal(calls, 0);
+
+  const metered = createMeteredGroq({
+    costTracker: { canSpend: async () => ({ allowed: true }), record: async (provider, usage) => { recorded.push({ provider, usage }); return 0; } },
+    groq,
+    logger: {},
+  });
+
+  assert.equal(await metered.transcreverAudio('AAAA'), 'gastei 30 no mercado');
+  assert.deepEqual(recorded, [{ provider: 'groq-audio', usage: { audioSeconds: 42, requests: 1 } }]);
+  assert.equal(metered.transcreverAudioDetalhado, undefined, 'variante sem medição não é exposta');
+  assert.equal(estimateAudioSeconds('A'.repeat(4000)), 10);
+  assert.equal(estimateAudioSeconds('A'.repeat(40000)), 20);
+});
+
+test('config: modelo legado padrão da Groq é GPT-OSS (llama-3.1-8b-instant foi desativado)', () => {
+  const configPath = require.resolve('../src/config');
+  const previous = process.env.GROQ_MODEL;
+
+  try {
+    delete process.env.GROQ_MODEL;
+    delete require.cache[configPath];
+    assert.equal(require('../src/config').config.groqModel, 'openai/gpt-oss-20b');
+  } finally {
+    if (previous !== undefined) {
+      process.env.GROQ_MODEL = previous;
+    }
+
+    delete require.cache[configPath];
+  }
+});

@@ -15,7 +15,13 @@ const AI_CONFIG = {
   deepseek: { timeoutMs: 300 },
   groqApiKey: 'fake',
   groqFallbackTimeoutMs: 300,
-  pricing: { deepseekInputUsdPerMTok: 1, deepseekOutputUsdPerMTok: 2, usdBrlRate: 5 },
+  pricing: {
+    deepseekInputUsdPerMTok: 1,
+    deepseekOutputUsdPerMTok: 2,
+    groqFallbackInputUsdPerMTok: 0.1,
+    groqFallbackOutputUsdPerMTok: 0.5,
+    usdBrlRate: 5,
+  },
 };
 
 function consentedSeed() {
