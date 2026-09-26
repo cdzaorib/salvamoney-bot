@@ -329,9 +329,10 @@ function createWeeklyReportService({
     return snap.val() || {};
   }
 
-  async function gerarRelatorioSemanal(session, text = 'relatório da semana') {
+  // Dados calculados do relatório (reutilizados pelo relatório com personalidade).
+  async function carregarDadosRelatorioSemanal(session, text = 'relatório da semana') {
     if (!hasValidAccessSession(session)) {
-      return WEEKLY_REPORT_REQUIRED_MESSAGE;
+      return null;
     }
 
     const referenceDate = now();
@@ -365,6 +366,16 @@ function createWeeklyReportService({
       profile,
       question: text,
     });
+
+    return reportData;
+  }
+
+  async function gerarRelatorioSemanal(session, text = 'relatório da semana') {
+    if (!hasValidAccessSession(session)) {
+      return WEEKLY_REPORT_REQUIRED_MESSAGE;
+    }
+
+    const reportData = await carregarDadosRelatorioSemanal(session, text);
     const fallback = buildDeterministicWeeklyReport(reportData);
 
     if (!reportData.quantidadeRegistros || !aiProviderRouter?.generateText) {
@@ -387,6 +398,7 @@ function createWeeklyReportService({
   }
 
   return {
+    carregarDadosRelatorioSemanal,
     gerarRelatorioSemanal,
     processarRelatorioSemanal,
   };

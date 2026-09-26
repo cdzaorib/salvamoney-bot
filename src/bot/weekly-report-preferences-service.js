@@ -24,6 +24,9 @@ const STATUS_COMMANDS = new Set([
   'relatorio semanal automatico',
 ]);
 
+const WEEK_DAYS = ['domingo', 'segunda', 'terca', 'quarta', 'quinta', 'sexta', 'sabado'];
+const WEEK_DAY_LABELS = ['domingo', 'segunda-feira', 'terça-feira', 'quarta-feira', 'quinta-feira', 'sexta-feira', 'sábado'];
+
 function normalizedCommand(value) {
   return normalizeText(value).trim().replace(/[?!.]+$/g, '').replace(/\s+/g, ' ');
 }
@@ -43,21 +46,39 @@ function parseWeeklyReportPreferenceCommand(value) {
     return { type: 'status' };
   }
 
-  const configureMatch = command.match(/^configurar relatorio semanal domingo (\d{1,2})(?::(\d{2}))?h?$/);
+  const configureMatch = command.match(/^configurar relatorio semanal (domingo|segunda|terca|quarta|quinta|sexta|sabado)(?:[- ]feira)? (\d{1,2})(?::(\d{2}))?h?$/);
 
   if (!configureMatch) {
     return null;
   }
 
-  const hour = Number(configureMatch[1]);
-  const minute = Number(configureMatch[2] || 0);
-
-  return {
+  const hour = Number(configureMatch[2]);
+  const minute = Number(configureMatch[3] || 0);
+  const result = {
     hour,
     minute,
     type: 'configure',
     valid: hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59,
   };
+
+  // Domingo continua sendo o padrão; outros dias ficam explícitos.
+  if (configureMatch[1] !== 'domingo') {
+    result.dayOfWeek = WEEK_DAYS.indexOf(configureMatch[1]);
+  }
+
+  return result;
+}
+
+function dayLabel(preference) {
+  const day = Number(preference?.diaSemana);
+
+  return WEEK_DAY_LABELS[Number.isInteger(day) && day >= 0 && day <= 6 ? day : 0];
+}
+
+function everyDayLabel(preference) {
+  const label = dayLabel(preference);
+
+  return `${['domingo', 'sábado'].includes(label) ? 'todo' : 'toda'} ${label}`;
 }
 
 function formatSchedule(preference) {
@@ -106,6 +127,7 @@ function createWeeklyReportPreferencesService({
         ...DEFAULT_WEEKLY_REPORT_PREFERENCE,
         ...(command.type === 'configure'
           ? {
+              diaSemana: command.dayOfWeek ?? 0,
               hora: command.hour,
               minuto: command.minute,
             }
@@ -116,7 +138,7 @@ function createWeeklyReportPreferencesService({
       await update(ref(db, path), preference);
 
       return command.type === 'configure'
-        ? `Relatório semanal configurado ✅ Vou te enviar todo domingo às ${formatSchedule(preference)}.`
+        ? `Relatório semanal configurado ✅ Vou te enviar ${everyDayLabel(preference)} às ${formatSchedule(preference)}.`
         : 'Relatório semanal ativado ✅ Vou te enviar todo domingo às 20h.';
     }
 
@@ -133,7 +155,7 @@ function createWeeklyReportPreferencesService({
     const preference = snapshot.val() || {};
 
     return preference.ativo === true
-      ? `Relatório semanal automático está ativo: domingo às ${formatSchedule(preference)}.`
+      ? `Relatório semanal automático está ativo: ${dayLabel(preference)} às ${formatSchedule(preference)}.`
       : 'Relatório semanal automático está desativado. Para ativar, envie: ativar relatório semanal';
   }
 

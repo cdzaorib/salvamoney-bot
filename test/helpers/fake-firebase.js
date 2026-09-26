@@ -8,7 +8,10 @@ function pathParts(path) {
   return String(path || '').split('/').filter(Boolean);
 }
 
-function createFakeFirebase(seed = {}) {
+// optimisticTransactions simula a concorrência otimista do Firebase: o handler
+// roda, o commit espera o próximo ciclo e, se outro escritor mudou o nó nesse
+// intervalo, o handler roda de novo com o valor atual.
+function createFakeFirebase(seed = {}, { optimisticTransactions = false } = {}) {
   const data = clone(seed) || {};
   const pushes = [];
   const removals = [];
@@ -73,8 +76,21 @@ function createFakeFirebase(seed = {}) {
       setValue(path, value);
     },
     async transaction(path, updateFunction) {
-      const current = clone(getValue(path)) ?? null;
-      const next = updateFunction(current);
+      let current = clone(getValue(path)) ?? null;
+      let next = updateFunction(current);
+
+      while (optimisticTransactions && next !== undefined) {
+        await new Promise((resolve) => setImmediate(resolve));
+
+        const latest = clone(getValue(path)) ?? null;
+
+        if (JSON.stringify(latest) === JSON.stringify(current)) {
+          break;
+        }
+
+        current = latest;
+        next = updateFunction(current);
+      }
 
       transactions.push({
         current,

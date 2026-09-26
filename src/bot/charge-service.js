@@ -1,5 +1,6 @@
 'use strict';
 
+const { errorSummary } = require('../error-summary');
 const { parseMoney } = require('../expense-parser');
 const { createTransactionStore } = require('../services/transaction-store');
 const { DEFAULT_GROUP, normalizeAccessTag } = require('../services/user-service');
@@ -604,10 +605,21 @@ function createChargeService({
 
       return sent !== false;
     } catch (err) {
-      console.error('Erro ao notificar cobrança:', err.response?.data || err.message || err);
+      console.error('Erro ao notificar cobrança:', errorSummary(err));
 
       return false;
     }
+  }
+
+  // Cobranças criadas pelo fluxo novo não guardam telefone: busca pelo cadastro da tag.
+  async function notifyParty(phone, tag, message) {
+    if (phone) {
+      return await notify(phone, message);
+    }
+
+    const profile = normalizeAccessTag(tag) ? await getUserByTag(normalizeAccessTag(tag)) : null;
+
+    return await notify(getUserPhone(profile), message);
   }
 
   async function registerOriginExpense(session, charge) {
@@ -844,7 +856,7 @@ function createChargeService({
       Object.assign(charge, linkedExpense.chargeFields);
       await writeChargeCopies(charge, linkedExpense.extraPaths);
     } catch (err) {
-      console.error('Erro ao criar cópias da cobrança:', err.response?.data || err.message || err);
+      console.error('Erro ao criar cópias da cobrança:', errorSummary(err));
 
       return 'Não consegui criar a cobrança com segurança agora. Tente novamente.';
     }
@@ -861,7 +873,7 @@ function createChargeService({
         Object.assign(charge, originFields);
         registeredExpense = true;
       } catch (err) {
-        console.error('Erro ao registrar ou vincular gasto da cobrança:', err.response?.data || err.message || err);
+        console.error('Erro ao registrar ou vincular gasto da cobrança:', errorSummary(err));
         expenseRegistrationFailed = true;
       }
     }
@@ -947,13 +959,14 @@ function createChargeService({
         respondedAt: now(),
       });
     } catch (err) {
-      console.error('Erro ao responder cobrança:', err.response?.data || err.message || err);
+      console.error('Erro ao responder cobrança:', errorSummary(err));
 
       return 'Não consegui atualizar as duas cópias da cobrança. Tente novamente.';
     }
 
-    await notify(
+    await notifyParty(
       selected.phoneOrigem,
+      selected.tagOrigem,
       status === 'aceita' ? acceptedNotificationMessage(selected) : declinedNotificationMessage(selected)
     );
 
@@ -992,12 +1005,12 @@ function createChargeService({
         respondedAt: now(),
       });
     } catch (err) {
-      console.error('Erro ao cancelar cobrança:', err.response?.data || err.message || err);
+      console.error('Erro ao cancelar cobrança:', errorSummary(err));
 
       return 'Não consegui atualizar as duas cópias da cobrança. Tente novamente.';
     }
 
-    await notify(selected.phoneDestino, canceledNotificationMessage(selected));
+    await notifyParty(selected.phoneDestino, selected.tagDestino, canceledNotificationMessage(selected));
 
     return cancelMessage(selected);
   }
@@ -1057,19 +1070,21 @@ function createChargeService({
         paidAt: now(),
       });
     } catch (err) {
-      console.error('Erro ao marcar cobrança como paga:', err.response?.data || err.message || err);
+      console.error('Erro ao marcar cobrança como paga:', errorSummary(err));
 
       return 'Não consegui marcar a cobrança como paga nem atualizar o gasto com segurança. Tente novamente.';
     }
 
     if (selected.type === 'received') {
-      await notify(
+      await notifyParty(
         selected.charge.phoneOrigem,
+        selected.charge.tagOrigem,
         paidNotificationMessage(selected.charge, selected.charge.nomeDestino || selected.charge.tagDestino)
       );
     } else {
-      await notify(
+      await notifyParty(
         selected.charge.phoneDestino,
+        selected.charge.tagDestino,
         paidNotificationMessage(selected.charge, selected.charge.nomeOrigem || selected.charge.tagOrigem)
       );
     }
@@ -1104,7 +1119,7 @@ function createChargeService({
       try {
         return await syncReceivedCharges(session);
       } catch (err) {
-        console.error('Erro ao sincronizar cobranças:', err.response?.data || err.message || err);
+        console.error('Erro ao sincronizar cobranças:', errorSummary(err));
 
         return 'Não consegui sincronizar as cobranças com segurança agora. Tente novamente.';
       }

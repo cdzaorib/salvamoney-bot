@@ -36,16 +36,16 @@ function createSendMessage(config, safeLog) {
       );
 
       console.log('📨 Evolution status:', response.status);
-      console.log('📨 Evolution response:', JSON.stringify(response.data).slice(0, 1000));
 
+      // O corpo da resposta pode repetir telefone e texto: nunca vai para o log.
       if (response.status >= 400) {
-        console.error('❌ Evolution recusou envio:', response.status, response.data);
+        console.error('❌ Evolution recusou envio:', response.status);
         return false;
       }
 
       return true;
     } catch (e) {
-      console.error('Erro ao enviar msg:', e.response?.status, e.response?.data || e.message);
+      console.error('Erro ao enviar msg:', e.response?.status || e.code || 'sem status');
       return false;
     }
   };

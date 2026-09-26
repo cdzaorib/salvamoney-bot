@@ -1,5 +1,6 @@
 'use strict';
 
+const { errorSummary } = require('../error-summary');
 const { validCategories } = require('./categories');
 const { normalizeText } = require('./text-utils');
 
@@ -22,7 +23,7 @@ function createAiMediaService({
   const { logMediaUrl, logText, maskPhone } = safeLog;
 
   function errorDetails(err) {
-    return err.response?.data || err.error || err.message;
+    return errorSummary(err);
   }
 
   function findAllowedCategory(category, customCategories = []) {
